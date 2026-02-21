@@ -3,74 +3,156 @@ import shutil
 
 script_name = os.path.basename(__file__)
 
-# Ask where to save the new folder
-base_path = input("Where do you want your SuperDirectory? (e.g. ~/Desktop/Homework):")
-# Expand ~ to the full path
-base_path = os.path.expanduser(base_path)
+# --- Source directory ---
+print(f"\nCurrent directory: {os.getcwd()}")
 
+while True:
+    choice = input("Are you already in the folder you want to use? (y/n): ").strip().lower()
+    if choice == 'y':
+        source_directory = os.getcwd()
+        break
+    elif choice == 'n':
+        while True:
+            raw = input("Enter the path to the source folder: ").strip()
+            path = os.path.expanduser(raw)
+            if os.path.isdir(path):
+                source_directory = path
+                break
+            else:
+                print(f"  Couldn't find '{raw}'. Check for typos and try again.")
+        break
+    else:
+        print("  Please enter 'y' or 'n'.")
 
-# Name the folder
-folder_name = input("What're you naming your SuperDirectory?: (e.g. totally legally aquired PDFs)")
+# --- Destination ---
+print()
+while True:
+    raw = input("Where do you want your SuperDirectory saved? (e.g. ~/Desktop): ").strip()
+    base_path = os.path.expanduser(raw)
+    if os.path.isdir(base_path):
+        break
+    else:
+        print(f"  Couldn't find '{raw}'. Check for typos and try again.")
 
-# Combine the paths
+folder_name = input("What do you want to name your SuperDirectory? (e.g. My Merged Files): ").strip()
 target_directory = os.path.join(base_path, folder_name)
 
-print(f"Files will be copied to: {target_directory}")
 
-# create empty list to store subfolder names
-all_subfolders = []
-
-# walk the current folder
-for root, dirs, files in os.walk('.'):
-        for name in dirs:
-                # Create a clean path from the current location to the subfolder
-                folder_path = os.path.join(root, name)
-                all_subfolders.append(folder_path)
-
-# Display them to the user
-print("\nSubfolders found:")
-for i, path in enumerate(all_subfolders):
-        print(f"{i}: {path}")
-
-# User selects which files to skip
-while True:
-    choices = input("What folders would you like to skip? Enter number of folder followed by a comma (e.g. 1, 2, 5, 6):")
-    if not choices.strip():
-            excluded_paths = []
-            break
+# --- Helper to list subdirectories ---
+def get_subdirs(directory):
     try:
-        indices = [int(i.strip()) for i in choices.split(",")]
+        return sorted([d for d in os.listdir(directory)
+                       if os.path.isdir(os.path.join(directory, d))])
+    except PermissionError:
+        return []
 
-        if all(0 <= i < len(all_subfolders) for i in indices):
-               excluded_paths = [all_subfolders[i] for i in indices]
-               break
+
+# --- Check for subfolders ---
+immediate = get_subdirs(source_directory)
+excluded_paths = []
+
+if not immediate:
+    print("\nNo subfolders detected — you're already in a SuperDirectory!")
+    while True:
+        choice = input("Copy all files to a new directory anyway? (y/n): ").strip().lower()
+        if choice == 'y':
+            break
+        elif choice == 'n':
+            print("Exiting.")
+            exit()
         else:
-               print(f"Please use numbers between 0 and {len(all_subfolders) - 1}.")
-    except ValueError:
-           print("Invalid input. Please enter numbers separated by commas.")
+            print("  Please enter 'y' or 'n'.")
+else:
+    # --- Skip folders, one level at a time ---
+    def ask_skip(directory):
+        subdirs = get_subdirs(directory)
+        if not subdirs:
+            return
 
-# ensures no overwritten files
-folder_name = os.path.basename(root)
-new_filename = f"{folder_name}_{name}"
+        dir_label = os.path.basename(directory) or directory
+        print(f"\nSubfolders in [{dir_label}]:")
+        for i, d in enumerate(subdirs):
+            print(f"  {i}: {d}")
+        print("  (Press Enter to keep all)")
 
-# Create target directory if it doesn't exist
+        while True:
+            choices = input("Which folders would you like to skip? ").strip()
+            if not choices:
+                skipped = set()
+                break
+            try:
+                indices = [int(x.strip()) for x in choices.split(",")]
+                if all(0 <= i < len(subdirs) for i in indices):
+                    skipped = {subdirs[i] for i in indices}
+                    break
+                else:
+                    print(f"  Please use numbers between 0 and {len(subdirs) - 1}.")
+            except ValueError:
+                print("  Invalid input. Enter numbers separated by commas.")
+
+        for d in subdirs:
+            full_path = os.path.join(directory, d)
+            if d in skipped:
+                excluded_paths.append(full_path)
+            else:
+                ask_skip(full_path)
+
+    ask_skip(source_directory)
+
+
+# --- Confirmation ---
+source_name = os.path.basename(source_directory) or source_directory
+print(f"\n--- Ready to copy ---")
+print(f"  From: {source_directory}")
+print(f"  To:   {target_directory}")
+if excluded_paths:
+    print(f"  Skipping {len(excluded_paths)} folder(s):")
+    for p in excluded_paths:
+        print(f"    - {os.path.relpath(p, source_directory)}")
+else:
+    print("  No folders will be skipped.")
+
+while True:
+    confirm = input(f"\n[{source_name}] files will be copied to [{folder_name}] at [{target_directory}]. Continue? (y/n): ").strip().lower()
+    if confirm == 'y':
+        break
+    elif confirm == 'n':
+        print("Cancelled.")
+        exit()
+    else:
+        print("  Please enter 'y' or 'n'.")
+
+
+# --- Copy ---
 os.makedirs(target_directory, exist_ok=True)
 
-for root, dirs, files in os.walk('.'):
-        # check if 'root' is is inside any excluded paths
-        if any(root.startswith(ex) for ex in excluded_paths):
-                continue # Skip the folder
+for root, dirs, files in os.walk(source_directory):
+    # Prune excluded dirs so os.walk won't descend into them
+    dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_paths]
 
-        for name in files:
-                # Make sure script doesn't copy itself over
-                if name == script_name:
-                        continue
-                source_path = os.path.join(root, name)
+    for name in files:
+        if name == script_name:
+            continue
 
-                # Create the new name using the parent folder
-                folder_prefix = os.path.basename(root)
-                new_name = f"{folder_prefix}_{name}"
-                destination_path = os.path.join(target_directory, new_name)
+        source_path = os.path.join(root, name)
 
-                # Copy the file!
-                shutil.copy(source_path, destination_path)
+        # Files in root keep their name; files in subfolders get a folder prefix
+        if root == source_directory:
+            new_name = name
+        else:
+            folder_prefix = os.path.basename(root)
+            new_name = f"{folder_prefix}_{name}"
+
+        destination_path = os.path.join(target_directory, new_name)
+
+        # Handle filename collisions
+        if os.path.exists(destination_path):
+            base, ext = os.path.splitext(new_name)
+            counter = 1
+            while os.path.exists(destination_path):
+                destination_path = os.path.join(target_directory, f"{base}_{counter}{ext}")
+                counter += 1
+
+        shutil.copy(source_path, destination_path)
+
+print("\nFinished!")
