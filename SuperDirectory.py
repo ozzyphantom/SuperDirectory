@@ -1,45 +1,13 @@
+# requires: pip install questionary
 import os
 import shutil
+import questionary
 
 script_name = os.path.basename(__file__)
 
-# --- Source directory ---
-print(f"\nCurrent directory: {os.getcwd()}")
 
-while True:
-    choice = input("Are you already in the folder you want to use? (y/n): ").strip().lower()
-    if choice == 'y':
-        source_directory = os.getcwd()
-        break
-    elif choice == 'n':
-        while True:
-            raw = input("Enter the path to the source folder: ").strip()
-            path = os.path.expanduser(raw)
-            if os.path.isdir(path):
-                source_directory = path
-                break
-            else:
-                print(f"  Couldn't find '{raw}'. Check for typos and try again.")
-        break
-    else:
-        print("  Please enter 'y' or 'n'.")
-
-# --- Destination ---
-print()
-while True:
-    raw = input("Where do you want your SuperDirectory saved? (e.g. ~/Desktop): ").strip()
-    base_path = os.path.expanduser(raw)
-    if os.path.isdir(base_path):
-        break
-    else:
-        print(f"  Couldn't find '{raw}'. Check for typos and try again.")
-
-folder_name = input("What do you want to name your SuperDirectory? (e.g. My Merged Files): ").strip()
-target_directory = os.path.join(base_path, folder_name)
-
-
-# --- Helper to list subdirectories ---
 def get_subdirs(directory):
+    """Return sorted list of immediate subdirectory names."""
     try:
         return sorted([d for d in os.listdir(directory)
                        if os.path.isdir(os.path.join(directory, d))])
@@ -47,62 +15,156 @@ def get_subdirs(directory):
         return []
 
 
-# --- Check for subfolders ---
+class ExclusionWizard:
+    """
+    Walks the directory tree one level at a time, letting the user pick
+    which folders to skip. Supports going back, starting over, and
+    skipping the rest of the exclusion process at any point.
+    """
+
+    def __init__(self, source):
+        self.source = source
+        self.excluded = []
+
+    def run(self):
+        while True:
+            result = self._process(self.source)
+            if result == 'start_over':
+                print("\n  Starting over...\n")
+                self.excluded = []
+                continue
+            break
+        return self.excluded
+
+    def _process(self, directory):
+        subdirs = get_subdirs(directory)
+        if not subdirs:
+            return 'done'
+
+        while True:
+            dir_label = os.path.basename(directory) or directory
+            is_root = (directory == self.source)
+
+            choices = [
+                questionary.Choice("Select folders to skip", value='select'),
+                questionary.Choice("Skip ALL subfolders here", value='skip_all'),
+                questionary.Choice("Keep ALL subfolders (move on)", value='keep_all'),
+                questionary.Separator(),
+                questionary.Choice("⏩  Skip remaining exclusion checks", value='skip_remaining'),
+            ]
+            if not is_root:
+                choices += [
+                    questionary.Choice("↩   Go back one level", value='go_back'),
+                    questionary.Choice("↩↩  Start over", value='start_over'),
+                ]
+
+            action = questionary.select(
+                f"Subfolders in [{dir_label}]:", choices=choices
+            ).ask()
+            if action is None:
+                exit()
+
+            if action == 'select':
+                to_skip = questionary.checkbox(
+                    "Select folders to SKIP  (space to toggle, enter to confirm):",
+                    choices=subdirs
+                ).ask()
+                if to_skip is None:
+                    to_skip = []
+
+                snapshot = list(self.excluded)
+                for d in to_skip:
+                    self.excluded.append(os.path.join(directory, d))
+
+                kept = [d for d in subdirs if d not in to_skip]
+                result = self._process_children(directory, kept)
+
+                if result == 'go_back':
+                    self.excluded[:] = snapshot  # undo this level's choices
+                    continue                      # re-ask this level
+                elif result == 'start_over':
+                    self.excluded[:] = snapshot
+                    return 'start_over'
+                return result
+
+            elif action == 'skip_all':
+                for d in subdirs:
+                    self.excluded.append(os.path.join(directory, d))
+                return 'done'
+
+            elif action == 'keep_all':
+                return 'done'
+
+            elif action == 'skip_remaining':
+                return 'skip_remaining'
+
+            elif action == 'go_back':
+                return 'go_back'
+
+            elif action == 'start_over':
+                return 'start_over'
+
+    def _process_children(self, parent, kept_subdirs):
+        for d in kept_subdirs:
+            result = self._process(os.path.join(parent, d))
+            if result in ('go_back', 'start_over', 'skip_remaining'):
+                return result
+        return 'done'
+
+
+# ── Source directory ──────────────────────────────────────────────────────────
+print(f"\nCurrent directory: {os.getcwd()}")
+
+use_current = questionary.confirm(
+    "Are you already in the folder you want to use as the source?"
+).ask()
+
+if use_current:
+    source_directory = os.getcwd()
+else:
+    while True:
+        raw = questionary.text("Enter the path to the source folder:").ask()
+        if raw is None:
+            exit()
+        path = os.path.expanduser(raw.strip())
+        if os.path.isdir(path):
+            source_directory = path
+            break
+        print(f"  Couldn't find '{raw.strip()}'. Check for typos and try again.")
+
+# ── Destination ───────────────────────────────────────────────────────────────
+print()
+while True:
+    raw = questionary.text("Where do you want your SuperDirectory saved? (e.g. ~/Desktop):").ask()
+    if raw is None:
+        exit()
+    base_path = os.path.expanduser(raw.strip())
+    if os.path.isdir(base_path):
+        break
+    print(f"  Couldn't find '{raw.strip()}'. Check for typos and try again.")
+
+folder_name = questionary.text("What do you want to name your SuperDirectory?").ask()
+if folder_name is None:
+    exit()
+folder_name = folder_name.strip()
+target_directory = os.path.join(base_path, folder_name)
+
+# ── Subfolders / exclusion ────────────────────────────────────────────────────
 immediate = get_subdirs(source_directory)
 excluded_paths = []
 
 if not immediate:
     print("\nNo subfolders detected — you're already in a SuperDirectory!")
-    while True:
-        choice = input("Copy all files to a new directory anyway? (y/n): ").strip().lower()
-        if choice == 'y':
-            break
-        elif choice == 'n':
-            print("Exiting.")
-            exit()
-        else:
-            print("  Please enter 'y' or 'n'.")
+    if not questionary.confirm("Copy all files to a new directory anyway?").ask():
+        print("Exiting.")
+        exit()
 else:
-    # --- Skip folders, one level at a time ---
-    def ask_skip(directory):
-        subdirs = get_subdirs(directory)
-        if not subdirs:
-            return
+    if questionary.confirm("Would you like to exclude any subfolders?").ask():
+        excluded_paths = ExclusionWizard(source_directory).run()
 
-        dir_label = os.path.basename(directory) or directory
-        print(f"\nSubfolders in [{dir_label}]:")
-        for i, d in enumerate(subdirs):
-            print(f"  {i}: {d}")
-        print("  (Press Enter to keep all)")
-
-        while True:
-            choices = input("Which folders would you like to skip? ").strip()
-            if not choices:
-                skipped = set()
-                break
-            try:
-                indices = [int(x.strip()) for x in choices.split(",")]
-                if all(0 <= i < len(subdirs) for i in indices):
-                    skipped = {subdirs[i] for i in indices}
-                    break
-                else:
-                    print(f"  Please use numbers between 0 and {len(subdirs) - 1}.")
-            except ValueError:
-                print("  Invalid input. Enter numbers separated by commas.")
-
-        for d in subdirs:
-            full_path = os.path.join(directory, d)
-            if d in skipped:
-                excluded_paths.append(full_path)
-            else:
-                ask_skip(full_path)
-
-    ask_skip(source_directory)
-
-
-# --- Confirmation ---
+# ── Confirmation ──────────────────────────────────────────────────────────────
 source_name = os.path.basename(source_directory) or source_directory
-print(f"\n--- Ready to copy ---")
+print("\n--- Ready to copy ---")
 print(f"  From: {source_directory}")
 print(f"  To:   {target_directory}")
 if excluded_paths:
@@ -112,22 +174,17 @@ if excluded_paths:
 else:
     print("  No folders will be skipped.")
 
-while True:
-    confirm = input(f"\n[{source_name}] files will be copied to [{folder_name}] at [{target_directory}]. Continue? (y/n): ").strip().lower()
-    if confirm == 'y':
-        break
-    elif confirm == 'n':
-        print("Cancelled.")
-        exit()
-    else:
-        print("  Please enter 'y' or 'n'.")
+if not questionary.confirm(
+    f"[{source_name}] files will be copied to [{folder_name}] at [{target_directory}]. Continue?"
+).ask():
+    print("Cancelled.")
+    exit()
 
-
-# --- Copy ---
+# ── Build file list ───────────────────────────────────────────────────────────
 os.makedirs(target_directory, exist_ok=True)
+files_to_copy = []
 
 for root, dirs, files in os.walk(source_directory):
-    # Prune excluded dirs so os.walk won't descend into them
     dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_paths]
 
     for name in files:
@@ -135,17 +192,9 @@ for root, dirs, files in os.walk(source_directory):
             continue
 
         source_path = os.path.join(root, name)
-
-        # Files in root keep their name; files in subfolders get a folder prefix
-        if root == source_directory:
-            new_name = name
-        else:
-            folder_prefix = os.path.basename(root)
-            new_name = f"{folder_prefix}_{name}"
-
+        new_name = name if root == source_directory else f"{os.path.basename(root)}_{name}"
         destination_path = os.path.join(target_directory, new_name)
 
-        # Handle filename collisions
         if os.path.exists(destination_path):
             base, ext = os.path.splitext(new_name)
             counter = 1
@@ -153,6 +202,21 @@ for root, dirs, files in os.walk(source_directory):
                 destination_path = os.path.join(target_directory, f"{base}_{counter}{ext}")
                 counter += 1
 
-        shutil.copy(source_path, destination_path)
+        files_to_copy.append((source_path, destination_path))
+
+# ── Copy with progress bar ────────────────────────────────────────────────────
+total = len(files_to_copy)
+if total == 0:
+    print("\n  No files found to copy.")
+else:
+    print(f"\n  Copying {total} file(s)...\n")
+    bar_width = 40
+    for i, (src, dst) in enumerate(files_to_copy):
+        shutil.copy(src, dst)
+        done = i + 1
+        filled = int(bar_width * done / total)
+        bar = '█' * filled + '░' * (bar_width - filled)
+        print(f"\r  [{bar}] {int(done / total * 100)}%  ({done}/{total})", end='', flush=True)
+    print()
 
 print("\nFinished!")
