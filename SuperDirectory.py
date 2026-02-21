@@ -8,6 +8,9 @@ from questionary import Style
 script_name = os.path.basename(__file__)
 
 # ── ANSI colour helpers ───────────────────────────────────────────────────────
+# IMPORTANT: Only use these in print() calls.
+# Never pass them inside questionary message strings — questionary uses its own
+# style system and will render ANSI escape codes as literal characters.
 def green(t):  return f"\033[32m{t}\033[0m"
 def red(t):    return f"\033[31m{t}\033[0m"
 def cyan(t):   return f"\033[36m{t}\033[0m"
@@ -16,32 +19,39 @@ def dim(t):    return f"\033[2m{t}\033[0m"
 
 # ── Questionary style ─────────────────────────────────────────────────────────
 STYLE = Style([
-    ('qmark',       'fg:#00b4d8 bold'),
-    ('question',    'fg:#ffffff bold'),
-    ('answer',      'fg:#00b4d8 bold'),
-    ('pointer',     'fg:#00b4d8 bold'),
-    ('highlighted', 'fg:#00b4d8 bold'),
-    ('selected',    'fg:#e74c3c bold'),   # red  = will be skipped
-    ('separator',   'fg:#444444'),
-    ('instruction', 'fg:#888888 italic'),
-    ('text',        'fg:#cccccc'),
+    ('qmark',                      'fg:#00b4d8 bold'),
+    ('question',                   'fg:#ffffff bold'),
+    ('answer',                     'fg:#00b4d8 bold'),
+    ('pointer',                    'fg:#00b4d8 bold'),
+    ('highlighted',                'fg:#00b4d8 bold'),
+    ('checkbox-selected',          'fg:#e74c3c bold'),  # red ◉ bubble = will be skipped
+    ('selected',                   'fg:#e74c3c bold'),  # red text     = will be skipped
+    ('checkbox',                   'fg:#2ecc71'),       # green ◯ bubble = will be kept
+    ('separator',                  'fg:#444444'),
+    ('instruction',                'fg:#888888 italic'),
+    ('highlighted-checkbox-selected', 'fg:#e74c3c bold'),
 ])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def ask(prompt_obj):
-    """Exit cleanly on Ctrl+C or Escape."""
+def ask(prompt_obj, on_cancel='exit'):
+    """
+    Wraps any questionary prompt.
+    on_cancel='exit'  → Ctrl+C or Esc exits the program (default)
+    on_cancel='back'  → returns None so the caller can handle it (e.g. Esc in checkbox)
+    """
     try:
         result = prompt_obj.ask()
     except KeyboardInterrupt:
         result = None
     if result is None:
-        print("\n\n  Exiting.")
-        sys.exit(0)
+        if on_cancel == 'exit':
+            print("\n\n  Exiting.")
+            sys.exit(0)
+        return None   # on_cancel='back'
     return result
 
 
 def section(title):
-    """Print a visual section divider."""
     pad = "─" * max(0, 48 - len(title))
     print(f"\n{dim(f'  ── {title} {pad}')}\n")
 
@@ -77,59 +87,61 @@ class ExclusionWizard:
             return 'done'
 
         while True:
+            # Plain text only in questionary messages — no ANSI helpers here
             dir_label = os.path.basename(directory) or directory
             is_root = (directory == self.source)
 
             print()
             choices = [
-                questionary.Choice("●  Select directories to skip",      value='select'),
-                questionary.Choice("●  Skip ALL directories here",        value='skip_all'),
-                questionary.Choice("●  Keep ALL directories (continue)",  value='keep_all'),
+                questionary.Choice("👆  Select directories to skip",       shortcut_key='s', value='select'),
+                questionary.Choice("⏩  Skip ALL directories here",         shortcut_key='a', value='skip_all'),
+                questionary.Choice("✅  Keep ALL directories (continue)",   shortcut_key='k', value='keep_all'),
                 questionary.Separator(),
-                questionary.Choice("⏩  Skip remaining exclusion checks",  value='skip_remaining'),
-                questionary.Choice("🔍  Preview a directory",             value='preview'),
+                questionary.Choice("⏭️   Skip remaining exclusion checks",   shortcut_key='f', value='skip_remaining'),
+                questionary.Choice("🔍  Preview a directory",               shortcut_key='p', value='preview'),
             ]
             if not is_root:
                 choices += [
-                    questionary.Choice("↩   Go back one level",  value='go_back'),
-                    questionary.Choice("↩↩  Start over",          value='start_over'),
+                    questionary.Choice("⏪  Go back one level",  shortcut_key='b', value='go_back'),
+                    questionary.Choice("🔄  Start over",          shortcut_key='r', value='start_over'),
                 ]
 
             action = ask(questionary.select(
-                f"Subdirectories in [{cyan(dir_label)}]:",
+                f"Subdirectories in [{dir_label}]:",   # plain text — no cyan()
                 choices=choices,
                 style=STYLE,
             ))
 
             if action == 'preview':
                 self._preview(directory, subdirs)
-                continue  # redisplay menu after returning from preview
+                continue
 
             if action == 'select':
-                # Directories already flagged from preview are pre-excluded;
-                # show them in the checkbox so the user can review/undo.
                 preview_excluded = [d for d in subdirs
                                     if os.path.join(directory, d) in self.excluded]
 
                 checkbox_choices = [
-                    questionary.Choice(
-                        title=d,
-                        value=d,
-                        checked=(d in preview_excluded),
-                    )
+                    questionary.Choice(title=d, value=d, checked=(d in preview_excluded))
                     for d in subdirs
                 ]
 
-                to_skip = ask(questionary.checkbox(
-                    "Select directories to SKIP  "
-                    + dim("(space = toggle · checked/red = skipped · enter = confirm)"),
-                    choices=checkbox_choices,
-                    style=STYLE,
-                )) or []
+                # Esc during checkbox → back to this menu (not exit)
+                to_skip = ask(
+                    questionary.checkbox(
+                        "Select directories to SKIP  (red = skipped)",
+                        choices=checkbox_choices,
+                        style=STYLE,
+                        instruction="(↑↓ navigate · space toggle · enter confirm · Esc back to menu)",
+                    ),
+                    on_cancel='back',
+                )
+
+                if to_skip is None:
+                    continue  # user pressed Esc — redisplay the menu
 
                 snapshot = list(self.excluded)
 
-                # Clear any preview flags for this level, then apply checkbox result
+                # Clear preview flags for this level, then apply checkbox result
                 for d in subdirs:
                     fp = os.path.join(directory, d)
                     if fp in self.excluded:
@@ -168,10 +180,9 @@ class ExclusionWizard:
                 return 'start_over'
 
     def _preview(self, parent, subdirs):
-        """Let the user inspect a directory's contents before deciding."""
         choices = [questionary.Choice(f"📁  {d}", value=d) for d in subdirs]
         choices.append(questionary.Separator())
-        choices.append(questionary.Choice("← Back", value='back'))
+        choices.append(questionary.Choice("⏪  Back", value='back'))
 
         pick = ask(questionary.select(
             "Which directory would you like to preview?",
@@ -189,15 +200,15 @@ class ExclusionWizard:
         except PermissionError:
             files = []
 
+        # ANSI in print() is fine
         print(f"\n  {bold('Contents of')} [{cyan(pick)}]:")
         if sub_subdirs:
             print(f"\n  Subdirectories ({len(sub_subdirs)}):")
             for d in sub_subdirs:
                 print(f"    📁  {d}")
         if files:
-            shown = files[:15]
             print(f"\n  Files ({len(files)}):")
-            for f in shown:
+            for f in files[:15]:
                 print(f"    📄  {f}")
             if len(files) > 15:
                 print(f"    {dim(f'… and {len(files) - 15} more')}")
@@ -206,12 +217,12 @@ class ExclusionWizard:
         print()
 
         action = ask(questionary.select(
-            f"What would you like to do with [{cyan(pick)}]?",
+            f"What would you like to do with [{pick}]?",  # plain text
             choices=[
                 questionary.Choice("●  Skip this directory (exclude it)",  value='skip'),
                 questionary.Choice("●  Keep this directory (include it)",   value='keep'),
                 questionary.Separator(),
-                questionary.Choice("←  Back to directory selection",        value='back'),
+                questionary.Choice("⏪  Back to directory selection",        value='back'),
             ],
             style=STYLE,
         ))
@@ -224,7 +235,6 @@ class ExclusionWizard:
             if full_path in self.excluded:
                 self.excluded.remove(full_path)
             print(f"\n  {green('✓')} [{pick}] will be included.\n")
-        # 'back' → just return, no change
 
     def _process_children(self, parent, kept_subdirs):
         for d in kept_subdirs:
@@ -235,7 +245,8 @@ class ExclusionWizard:
 
 
 # ── Source directory ──────────────────────────────────────────────────────────
-print(f"\n  {dim('Press Ctrl+C at any time to exit.')}")
+print(f"\n  {dim('Ctrl+C exits at any time.')}")
+print(f"  {dim('In checkboxes: space = toggle selection · enter = confirm · Esc = back to menu')}\n")
 section("Source Directory")
 
 print(f"  Current directory: {cyan(os.getcwd())}\n")
@@ -248,6 +259,7 @@ use_current = ask(questionary.confirm(
 if use_current:
     source_directory = os.getcwd()
 else:
+    print(f"\n  {dim('Tip: Press Tab to autocomplete. Start with ~ for your home directory.')}\n")
     while True:
         raw = ask(questionary.path(
             "Enter the path to the source directory:",
@@ -264,6 +276,7 @@ source_name = os.path.basename(source_directory) or source_directory
 
 # ── Destination ───────────────────────────────────────────────────────────────
 section("Destination")
+print(f"  {dim('Tip: Press Tab to autocomplete. Start with ~ for your home directory.')}\n")
 
 while True:
     raw = ask(questionary.path(
@@ -309,12 +322,16 @@ def show_summary():
     section("Confirmation")
     print(f"  From:  {cyan(source_directory)}")
     print(f"  To:    {cyan(target_directory)}")
-    if excluded_paths:
-        print(f"\n  Excluding {len(excluded_paths)} director(ies):")
+    n = len(excluded_paths)
+    if n == 0:
+        print(f"\n  {green('✓')} No directories will be excluded.")
+    elif n == 1:
+        print(f"\n  Excluding 1 directory:")
+        print(f"    {red('✗')}  {os.path.relpath(excluded_paths[0], source_directory)}")
+    else:
+        print(f"\n  Excluding {n} directories:")
         for p in excluded_paths:
             print(f"    {red('✗')}  {os.path.relpath(p, source_directory)}")
-    else:
-        print(f"\n  {green('✓')} No directories will be excluded.")
     print()
 
 
@@ -332,10 +349,10 @@ while True:
     action = ask(questionary.select(
         "What would you like to do?",
         choices=[
-            questionary.Choice("●  Go back to exclusion settings",  value='exclusion'),
-            questionary.Choice("●  Start over from the beginning",  value='restart'),
+            questionary.Choice("⏪  Go back to exclusion settings",  value='exclusion'),
+            questionary.Choice("🔄  Start over from the beginning",  value='restart'),
             questionary.Separator(),
-            questionary.Choice("✗  Quit",                           value='quit'),
+            questionary.Choice("✗   Quit",                           value='quit'),
         ],
         style=STYLE,
     ))
