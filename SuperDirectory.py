@@ -1,4 +1,3 @@
-# requires: pip install questionary
 import os
 import sys
 import shutil
@@ -10,8 +9,7 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTKStyle
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.enums import CompleteStyle
+from prompt_toolkit.shortcuts import CompleteStyle
 
 script_name = os.path.basename(__file__)
 
@@ -72,11 +70,7 @@ def ask(prompt_obj, on_cancel='exit'):
 
 
 def yn_select(message):
-    """
-    Yes/No with visual arrow-key bubbles AND y/n keyboard shortcuts.
-    Accepts plain str or prompt_toolkit FormattedText for the message.
-    Pressing 'y' or 'n' navigates to that choice; Enter confirms.
-    """
+    """Yes/No selector with arrow-key navigation and y/n keyboard shortcuts."""
     return ask(questionary.select(
         message,
         choices=[
@@ -103,6 +97,7 @@ def get_subdirs(directory):
 # ── Custom directory checkbox ─────────────────────────────────────────────────
 # Built with prompt_toolkit directly so we can support:
 #   space   = toggle skip/keep
+#   a       = select / deselect all
 #   enter   = confirm
 #   p       = preview highlighted directory (if preview_fn provided)
 #   Esc     = go back to menu (returns None)
@@ -119,7 +114,7 @@ def run_directory_checkbox(message, choices, pre_checked=None, preview_fn=None):
 
     def get_text():
         tokens = [('class:question', f'  ? {message}\n')]
-        instr = '  (↑↓ = navigate · space = toggle · enter = confirm'
+        instr = '  (↑↓ = navigate · space = toggle · a = select all · enter = confirm'
         if preview_fn:
             instr += ' · p = preview highlighted'
         instr += ' · Esc = back to menu)\n\n'
@@ -145,6 +140,13 @@ def run_directory_checkbox(message, choices, pre_checked=None, preview_fn=None):
     def _(e):
         item = choices[cursor[0]]
         selected.discard(item) if item in selected else selected.add(item)
+
+    @kb.add('a')
+    def _(e):
+        if selected == set(choices):
+            selected.clear()
+        else:
+            selected.update(choices)
 
     @kb.add('enter')
     def _(e):
@@ -198,17 +200,17 @@ class ExclusionWizard:
 
     def __init__(self, source, initial_excluded=None):
         self.source   = source
-        self.excluded = list(initial_excluded or [])
+        self.excluded = set(initial_excluded or [])
 
     def run(self):
         while True:
             result = self._process(self.source)
             if result == 'start_over':
                 print(f"\n  {cyan('Starting over...')}\n")
-                self.excluded = []
+                self.excluded.clear()
                 continue
             break
-        return self.excluded
+        return sorted(self.excluded)
 
     def _process(self, directory):
         subdirs = get_subdirs(directory)
@@ -259,30 +261,23 @@ class ExclusionWizard:
                 if to_skip is None:
                     continue  # Esc → back to menu
 
-                snapshot = list(self.excluded)
-                for d in subdirs:
-                    fp = os.path.join(directory, d)
-                    if fp in self.excluded:
-                        self.excluded.remove(fp)
-                for d in to_skip:
-                    self.excluded.append(os.path.join(directory, d))
+                snapshot = set(self.excluded)
+                self.excluded -= {os.path.join(directory, d) for d in subdirs}
+                self.excluded |= {os.path.join(directory, d) for d in to_skip}
 
                 kept   = [d for d in subdirs if os.path.join(directory, d) not in self.excluded]
                 result = self._process_children(directory, kept)
 
                 if result == 'go_back':
-                    self.excluded[:] = snapshot
+                    self.excluded = snapshot
                     continue
                 elif result == 'start_over':
-                    self.excluded[:] = snapshot
+                    self.excluded = snapshot
                     return 'start_over'
                 return result
 
             elif action == 'skip_all':
-                for d in subdirs:
-                    fp = os.path.join(directory, d)
-                    if fp not in self.excluded:
-                        self.excluded.append(fp)
+                self.excluded |= {os.path.join(directory, d) for d in subdirs}
                 return 'done'
 
             elif action == 'keep_all':
@@ -315,12 +310,10 @@ class ExclusionWizard:
         fp     = os.path.join(parent, pick)
         result = self._show_preview(fp)
         if result == 'skip':
-            if fp not in self.excluded:
-                self.excluded.append(fp)
+            self.excluded.add(fp)
             print(f"\n  {red('✗')} [{pick}] marked for exclusion.\n")
         elif result == 'keep':
-            if fp in self.excluded:
-                self.excluded.remove(fp)
+            self.excluded.discard(fp)
             print(f"\n  {green('✓')} [{pick}] will be included.\n")
 
     def _show_preview(self, full_path):
@@ -373,7 +366,7 @@ class ExclusionWizard:
 
 # ── Source directory ──────────────────────────────────────────────────────────
 print(f"\n  {dim('Ctrl+C exits at any time.')}")
-print(f"  {dim('In checkboxes: space = toggle · enter = confirm · Esc = back to menu')}\n")
+print(f"  {dim('In checkboxes: space = toggle · a = select all · enter = confirm · Esc = back')}\n")
 section("Source Directory")
 
 print(f"  Current directory: {cyan(os.getcwd())}\n")
@@ -433,13 +426,7 @@ if not immediate:
         print("\n  Exiting.")
         sys.exit(0)
 else:
-    # FormattedText lets us color "exclude" red inside the questionary message
-    exclude_msg = FormattedText([
-        ('class:question', 'Would you like to '),
-        ('fg:#e74c3c bold', 'exclude'),
-        ('class:question', ' any subdirectories?'),
-    ])
-    if yn_select(exclude_msg):
+    if yn_select(f"Would you like to {red('exclude')} any subdirectories?"):
         excluded_paths = ExclusionWizard(source_directory).run()
 
 
@@ -505,10 +492,11 @@ while True:
 
 # ── Build file list ───────────────────────────────────────────────────────────
 os.makedirs(target_directory, exist_ok=True)
-files_to_copy = []
+excluded_set   = set(excluded_paths)
+files_to_copy  = []
 
 for root, dirs, files in os.walk(source_directory):
-    dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_paths]
+    dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_set]
 
     for name in files:
         if name == script_name:
