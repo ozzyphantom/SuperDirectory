@@ -14,11 +14,12 @@ from prompt_toolkit.shortcuts import CompleteStyle
 script_name = os.path.basename(__file__)
 
 # ── ANSI colour helpers (print() only — never inside questionary messages) ────
-def green(t):  return f"\033[32m{t}\033[0m"
-def red(t):    return f"\033[31m{t}\033[0m"
-def cyan(t):   return f"\033[36m{t}\033[0m"
-def bold(t):   return f"\033[1m{t}\033[0m"
-def dim(t):    return f"\033[2m{t}\033[0m"
+def green(t):   return f"\033[32m{t}\033[0m"
+def red(t):     return f"\033[31m{t}\033[0m"
+def cyan(t):    return f"\033[36m{t}\033[0m"
+def orange(t):  return f"\033[38;5;208m{t}\033[0m"
+def bold(t):    return f"\033[1m{t}\033[0m"
+def dim(t):     return f"\033[2m{t}\033[0m"
 
 def format_path_red_tail(path):
     """Color only the last component of a path red: /some/path/LAST_IN_RED"""
@@ -221,14 +222,14 @@ class ExclusionWizard:
             dir_label = os.path.basename(directory) or directory
             is_root   = (directory == self.source)
 
-            print()
+            print(f"\n  📂 {orange(dir_label)}")
             choices = [
-                questionary.Choice("👆  Select directories to skip",      shortcut_key='s', value='select'),
-                questionary.Choice("⏩  Skip ALL directories here",        shortcut_key='a', value='skip_all'),
-                questionary.Choice("✅  Keep ALL directories (continue)",  shortcut_key='k', value='keep_all'),
+                questionary.Choice("👆  Select subdirectories to skip",      shortcut_key='s', value='select'),
+                questionary.Choice("⏩  Skip ALL subdirectories here",        shortcut_key='a', value='skip_all'),
+                questionary.Choice("✅  Keep ALL subdirectories (continue)",  shortcut_key='k', value='keep_all'),
                 questionary.Separator(),
-                questionary.Choice("⏭️  Skip remaining exclusion checks",  shortcut_key='f', value='skip_remaining'),
-                questionary.Choice("🔍  Preview a directory",              shortcut_key='p', value='preview'),
+                questionary.Choice("⏭️  Skip remaining subdirectory checks", shortcut_key='f', value='skip_remaining'),
+                questionary.Choice("🔍  Preview a subdirectory",            shortcut_key='p', value='preview'),
             ]
             if not is_root:
                 choices += [
@@ -252,7 +253,7 @@ class ExclusionWizard:
                 preview_fn  = lambda d: self._show_preview(os.path.join(directory, d))
 
                 to_skip = run_directory_checkbox(
-                    "Select directories to SKIP  (red = will be skipped)",
+                    "Select subdirectories to SKIP  (red = will be skipped)",
                     choices=subdirs,
                     pre_checked=pre_checked,
                     preview_fn=preview_fn,
@@ -299,7 +300,7 @@ class ExclusionWizard:
         choices.append(questionary.Choice("⏪  Back", value='back'))
 
         pick = ask(questionary.select(
-            "Which directory would you like to preview?",
+            "Which subdirectory would you like to preview?",
             choices=choices,
             style=STYLE,
         ))
@@ -311,10 +312,10 @@ class ExclusionWizard:
         result = self._show_preview(fp)
         if result == 'skip':
             self.excluded.add(fp)
-            print(f"\n  {red('✗')} [{pick}] marked for exclusion.\n")
+            print(f"\n  {red('✗')} [{orange(pick)}] marked for exclusion.\n")
         elif result == 'keep':
             self.excluded.discard(fp)
-            print(f"\n  {green('✓')} [{pick}] will be included.\n")
+            print(f"\n  {green('✓')} [{orange(pick)}] will be included.\n")
 
     def _show_preview(self, full_path):
         """
@@ -330,7 +331,7 @@ class ExclusionWizard:
         except PermissionError:
             files = []
 
-        print(f"\n  {bold('Contents of')} [{cyan(dir_name)}]:")
+        print(f"\n  {bold('Contents of')} [{orange(dir_name)}]:")
         if sub_subdirs:
             print(f"\n  Subdirectories ({len(sub_subdirs)}):")
             for d in sub_subdirs:
@@ -344,6 +345,7 @@ class ExclusionWizard:
         if not sub_subdirs and not files:
             print(f"  {dim('(empty)')}")
         print()
+        print(f"  📂 {orange(dir_name)}")
 
         return ask(questionary.select(
             f"What would you like to do with [{dir_name}]?",
@@ -365,7 +367,16 @@ class ExclusionWizard:
 
 
 # ── Source directory ──────────────────────────────────────────────────────────
-print(f"\n  {dim('Ctrl+C exits at any time.')}")
+BANNER = r"""
+ oooooooo8                                               ooooooooo   o88                                       o8
+888        oooo  oooo ooooooooo    ooooooooo8 oo oooooo   888    88o oooo  oo oooooo    ooooooooo8  ooooooo  o888oo ooooooo  oo oooooo  oooo   oooo
+ 888oooooo  888   888  888    888 888oooooo8   888    888 888    888  888   888    888 888oooooo8 888     888 888 888     888 888    888 888   888
+        888 888   888  888    888 888          888        888    888  888   888        888        888         888 888     888 888         888 888
+o88oooo888   888o88 8o 888ooo88     88oooo888 o888o      o888ooo88   o888o o888o         88oooo888  88ooo888   888o 88ooo88  o888o          8888
+                      o888                                                                                                               o8o888
+"""
+print(cyan(BANNER))
+print(f"  {dim('Ctrl+C exits at any time.')}")
 print(f"  {dim('In checkboxes: space = toggle · a = select all · enter = confirm · Esc = back')}\n")
 section("Source Directory")
 
@@ -376,7 +387,7 @@ use_current = yn_select("Are you already in the directory you want to use as the
 if use_current:
     source_directory = os.getcwd()
 else:
-    print(f"\n  {dim('Tip: Tab autocompletes paths. Use ~/ to start from your home directory.')}\n")
+    print(f"\n  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
     while True:
         raw = ask(questionary.path(
             "Enter the path to the source directory:",
@@ -394,7 +405,7 @@ source_name = os.path.basename(source_directory) or source_directory
 
 # ── Destination ───────────────────────────────────────────────────────────────
 section("Destination")
-print(f"  {dim('Tip: Tab autocompletes paths. Use ~/ to start from your home directory.')}\n")
+print(f"  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
 
 while True:
     raw = ask(questionary.path(
@@ -426,7 +437,7 @@ if not immediate:
         print("\n  Exiting.")
         sys.exit(0)
 else:
-    if yn_select(f"Would you like to {red('exclude')} any subdirectories?"):
+    if yn_select("Would you like to exclude any subdirectories?"):
         excluded_paths = ExclusionWizard(source_directory).run()
 
 
@@ -462,6 +473,7 @@ while True:
         "What would you like to do?",
         choices=[
             questionary.Choice("▶️  Continue anyway",                    value='continue'),
+            questionary.Choice("📁  Copy to a different directory",      value='change_dest'),
             questionary.Choice("⏪  Go back to exclusion settings",      value='exclusion'),
             questionary.Choice("🔄  Start over from the beginning",      value='restart'),
             questionary.Separator(),
@@ -478,6 +490,26 @@ while True:
     elif action == 'restart':
         print(f"\n  {cyan('Restarting...')}\n")
         os.execv(sys.executable, [sys.executable] + sys.argv)
+    elif action == 'change_dest':
+        section("Destination")
+        print(f"  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
+        while True:
+            raw = ask(questionary.path(
+                "Where do you want your SuperDirectory saved?",
+                style=STYLE,
+                only_directories=True,
+                complete_style=CompleteStyle.COLUMN,
+            ))
+            base_path = os.path.expanduser(raw.strip())
+            if os.path.isdir(base_path):
+                break
+            print(f"\n  {red('✗')} Couldn't find '{raw.strip()}'. Check for typos and try again.\n")
+        dir_name = ask(questionary.text(
+            "What do you want to name your SuperDirectory?",
+            style=STYLE,
+        )).strip()
+        target_directory = os.path.join(base_path, dir_name)
+        show_summary()
     elif action == 'exclusion':
         section("Exclusion")
         if excluded_paths:
