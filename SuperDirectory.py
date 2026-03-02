@@ -95,6 +95,28 @@ def get_subdirs(directory):
         return []
 
 
+def ask_directory(prompt):
+    """Prompt for a valid directory path with tab-completion."""
+    print(f"\n  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
+    while True:
+        raw = ask(questionary.path(prompt, style=STYLE, only_directories=True,
+                                   complete_style=CompleteStyle.COLUMN))
+        path = os.path.realpath(os.path.expanduser(raw.strip()))
+        if os.path.isdir(path):
+            return path
+        print(f"\n  {red('✗')} Couldn't find '{raw.strip()}'. Check for typos and try again.\n")
+
+
+def ask_dirname():
+    """Prompt for a valid SuperDirectory name."""
+    while True:
+        name = ask(questionary.text("What do you want to name your SuperDirectory?",
+                                    style=STYLE)).strip()
+        if name and name not in ('.', '..') and os.sep not in name:
+            return name
+        print(f"\n  {red('✗')} Invalid name. Avoid empty names, '.', '..', or path separators.\n")
+
+
 # ── Custom directory checkbox ─────────────────────────────────────────────────
 # Built with prompt_toolkit directly so we can support:
 #   space   = toggle skip/keep
@@ -366,8 +388,9 @@ class ExclusionWizard:
         return 'done'
 
 
-# ── Source directory ──────────────────────────────────────────────────────────
-BANNER = r"""
+# ── Main ─────────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    BANNER = r"""
  oooooooo8                                               ooooooooo   o88                                       o8
 888        oooo  oooo ooooooooo    ooooooooo8 oo oooooo   888    88o oooo  oo oooooo    ooooooooo8  ooooooo  o888oo ooooooo  oo oooooo  oooo   oooo
  888oooooo  888   888  888    888 888oooooo8   888    888 888    888  888   888    888 888oooooo8 888     888 888 888     888 888    888 888   888
@@ -375,193 +398,161 @@ BANNER = r"""
 o88oooo888   888o88 8o 888ooo88     88oooo888 o888o      o888ooo88   o888o o888o         88oooo888  88ooo888   888o 88ooo88  o888o          8888
                       o888                                                                                                               o8o888
 """
-print(cyan(BANNER))
-print(f"  {dim('Ctrl+C exits at any time.')}")
-print(f"  {dim('In checkboxes: space = toggle · a = select all · enter = confirm · Esc = back')}\n")
-section("Source Directory")
+    print(cyan(BANNER))
+    print(f"  {dim('Ctrl+C exits at any time.')}")
+    print(f"  {dim('In checkboxes: space = toggle · a = select all · enter = confirm · Esc = back')}\n")
 
-print(f"  Current directory: {cyan(os.getcwd())}\n")
+    # ── Source directory ──────────────────────────────────────────────────────
+    section("Source Directory")
 
-use_current = yn_select("Are you already in the directory you want to use as the source?")
+    print(f"  Current directory: {cyan(os.getcwd())}\n")
 
-if use_current:
-    source_directory = os.getcwd()
-else:
-    print(f"\n  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
-    while True:
-        raw = ask(questionary.path(
-            "Enter the path to the source directory:",
-            style=STYLE,
-            only_directories=True,
-            complete_style=CompleteStyle.COLUMN,
-        ))
-        path = os.path.expanduser(raw.strip())
-        if os.path.isdir(path):
-            source_directory = path
-            break
-        print(f"\n  {red('✗')} Couldn't find '{raw.strip()}'. Check for typos and try again.\n")
+    use_current = yn_select("Are you already in the directory you want to use as the source?")
 
-source_name = os.path.basename(source_directory) or source_directory
-
-# ── Destination ───────────────────────────────────────────────────────────────
-section("Destination")
-print(f"  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
-
-while True:
-    raw = ask(questionary.path(
-        "Where do you want your SuperDirectory saved?",
-        style=STYLE,
-        only_directories=True,
-        complete_style=CompleteStyle.COLUMN,
-    ))
-    base_path = os.path.expanduser(raw.strip())
-    if os.path.isdir(base_path):
-        break
-    print(f"\n  {red('✗')} Couldn't find '{raw.strip()}'. Check for typos and try again.\n")
-
-dir_name = ask(questionary.text(
-    "What do you want to name your SuperDirectory?",
-    style=STYLE,
-)).strip()
-target_directory = os.path.join(base_path, dir_name)
-
-# ── Exclusion ─────────────────────────────────────────────────────────────────
-section("Exclusion")
-
-immediate      = get_subdirs(source_directory)
-excluded_paths = []
-
-if not immediate:
-    print(f"  {cyan('No subdirectories detected')} — you're already in a SuperDirectory!\n")
-    if not yn_select("Copy all files to a new directory anyway?"):
-        print("\n  Exiting.")
-        sys.exit(0)
-else:
-    if yn_select("Would you like to exclude any subdirectories?"):
-        excluded_paths = ExclusionWizard(source_directory).run()
-
-
-# ── Confirmation ──────────────────────────────────────────────────────────────
-def show_summary():
-    section("Confirmation")
-    print(f"  From:  {format_path_red_tail(source_directory)}")
-    print(f"  To:    {format_path_red_tail(target_directory)}")
-    n = len(excluded_paths)
-    if n == 0:
-        print(f"\n  {green('✓')} No directories will be excluded.")
-    elif n == 1:
-        print(f"\n  Excluding 1 directory:")
-        print(f"    {red('✗')}  {os.path.relpath(excluded_paths[0], source_directory)}")
+    if use_current:
+        source_directory = os.path.realpath(os.getcwd())
     else:
-        print(f"\n  Excluding {n} directories:")
-        for p in excluded_paths:
-            print(f"    {red('✗')}  {os.path.relpath(p, source_directory)}")
-    print()
+        source_directory = ask_directory("Enter the path to the source directory:")
 
+    source_name = os.path.basename(source_directory) or source_directory
 
-show_summary()
+    # ── Destination ───────────────────────────────────────────────────────────
+    section("Destination")
+    base_path = ask_directory("Where do you want your SuperDirectory saved?")
+    dir_name = ask_dirname()
+    target_directory = os.path.realpath(os.path.join(base_path, dir_name))
 
-while True:
-    confirmed = yn_select(
-        f"[{source_name}] files will be copied to [{dir_name}] at [{target_directory}]. Continue?"
-    )
+    # ── Exclusion ─────────────────────────────────────────────────────────────
+    section("Exclusion")
 
-    if confirmed:
-        break
+    immediate      = get_subdirs(source_directory)
+    excluded_paths = []
 
-    action = ask(questionary.select(
-        "What would you like to do?",
-        choices=[
-            questionary.Choice("▶️  Continue anyway",                    value='continue'),
-            questionary.Choice("📁  Copy to a different directory",      value='change_dest'),
-            questionary.Choice("⏪  Go back to exclusion settings",      value='exclusion'),
-            questionary.Choice("🔄  Start over from the beginning",      value='restart'),
-            questionary.Separator(),
-            questionary.Choice("✗   Quit",                               value='quit'),
-        ],
-        style=STYLE,
-    ))
+    if not immediate:
+        print(f"  {cyan('No subdirectories detected')} — you're already in a SuperDirectory!\n")
+        if not yn_select("Copy all files to a new directory anyway?"):
+            print("\n  Exiting.")
+            sys.exit(0)
+    else:
+        if yn_select("Would you like to exclude any subdirectories?"):
+            excluded_paths = ExclusionWizard(source_directory).run()
 
-    if action == 'continue':
-        break
-    elif action == 'quit':
-        print("\n  Exiting.")
-        sys.exit(0)
-    elif action == 'restart':
-        print(f"\n  {cyan('Restarting...')}\n")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    elif action == 'change_dest':
-        section("Destination")
-        print(f"  {dim('Tip: Tab+arrow keys to complete paths. Enter confirms. Use ~/ for home directory.')}\n")
-        while True:
-            raw = ask(questionary.path(
-                "Where do you want your SuperDirectory saved?",
-                style=STYLE,
-                only_directories=True,
-                complete_style=CompleteStyle.COLUMN,
-            ))
-            base_path = os.path.expanduser(raw.strip())
-            if os.path.isdir(base_path):
-                break
-            print(f"\n  {red('✗')} Couldn't find '{raw.strip()}'. Check for typos and try again.\n")
-        dir_name = ask(questionary.text(
-            "What do you want to name your SuperDirectory?",
-            style=STYLE,
-        )).strip()
-        target_directory = os.path.join(base_path, dir_name)
-        show_summary()
-    elif action == 'exclusion':
-        section("Exclusion")
-        if excluded_paths:
-            keep   = yn_select("Keep your previous exclusion settings as a starting point?")
-            wizard = ExclusionWizard(source_directory,
-                                     initial_excluded=excluded_paths if keep else None)
+    # ── Confirmation ──────────────────────────────────────────────────────────
+    def show_summary():
+        section("Confirmation")
+        print(f"  From:  {format_path_red_tail(source_directory)}")
+        print(f"  To:    {format_path_red_tail(target_directory)}")
+        n = len(excluded_paths)
+        if n == 0:
+            print(f"\n  {green('✓')} No directories will be excluded.")
+        elif n == 1:
+            print(f"\n  Excluding 1 directory:")
+            print(f"    {red('✗')}  {os.path.relpath(excluded_paths[0], source_directory)}")
         else:
-            wizard = ExclusionWizard(source_directory)
-        excluded_paths = wizard.run()
-        show_summary()
+            print(f"\n  Excluding {n} directories:")
+            for p in excluded_paths:
+                print(f"    {red('✗')}  {os.path.relpath(p, source_directory)}")
+        print()
 
+    show_summary()
 
-# ── Build file list ───────────────────────────────────────────────────────────
-os.makedirs(target_directory, exist_ok=True)
-excluded_set   = set(excluded_paths)
-files_to_copy  = []
+    while True:
+        confirmed = yn_select(
+            f"[{source_name}] files will be copied to [{dir_name}] at [{target_directory}]. Continue?"
+        )
 
-for root, dirs, files in os.walk(source_directory):
-    dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_set]
+        if confirmed:
+            break
 
-    for name in files:
-        if name == script_name:
-            continue
+        action = ask(questionary.select(
+            "What would you like to do?",
+            choices=[
+                questionary.Choice("▶️  Continue anyway",                    value='continue'),
+                questionary.Choice("📁  Copy to a different directory",      value='change_dest'),
+                questionary.Choice("⏪  Go back to exclusion settings",      value='exclusion'),
+                questionary.Choice("🔄  Start over from the beginning",      value='restart'),
+                questionary.Separator(),
+                questionary.Choice("✗   Quit",                               value='quit'),
+            ],
+            style=STYLE,
+        ))
 
-        source_path      = os.path.join(root, name)
-        new_name         = name if root == source_directory else f"{os.path.basename(root)}_{name}"
-        destination_path = os.path.join(target_directory, new_name)
+        if action == 'continue':
+            break
+        elif action == 'quit':
+            print("\n  Exiting.")
+            sys.exit(0)
+        elif action == 'restart':
+            print(f"\n  {cyan('Restarting...')}\n")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        elif action == 'change_dest':
+            section("Destination")
+            base_path = ask_directory("Where do you want your SuperDirectory saved?")
+            dir_name = ask_dirname()
+            target_directory = os.path.realpath(os.path.join(base_path, dir_name))
+            show_summary()
+        elif action == 'exclusion':
+            section("Exclusion")
+            if excluded_paths:
+                keep   = yn_select("Keep your previous exclusion settings as a starting point?")
+                wizard = ExclusionWizard(source_directory,
+                                         initial_excluded=excluded_paths if keep else None)
+            else:
+                wizard = ExclusionWizard(source_directory)
+            excluded_paths = wizard.run()
+            show_summary()
 
-        if os.path.exists(destination_path):
-            base, ext = os.path.splitext(new_name)
-            counter = 1
-            while os.path.exists(destination_path):
-                destination_path = os.path.join(target_directory, f"{base}_{counter}{ext}")
-                counter += 1
+    # ── Build file list ───────────────────────────────────────────────────────
+    os.makedirs(target_directory, exist_ok=True)
+    excluded_set   = set(excluded_paths)
+    files_to_copy  = []
 
-        files_to_copy.append((source_path, destination_path))
+    for root, dirs, files in os.walk(source_directory, followlinks=False):
+        dirs[:] = [d for d in dirs if os.path.join(root, d) not in excluded_set]
 
-# ── Copy with progress bar ────────────────────────────────────────────────────
-section("Copying")
-total = len(files_to_copy)
+        for name in files:
+            if name == script_name:
+                continue
 
-if total == 0:
-    print(f"  {dim('No files found to copy.')}")
-else:
-    print(f"  Copying {bold(str(total))} file(s)...\n")
-    bar_width = 40
-    for i, (src, dst) in enumerate(files_to_copy):
-        shutil.copy(src, dst)
-        done   = i + 1
-        filled = int(bar_width * done / total)
-        bar    = green('█' * filled) + dim('░' * (bar_width - filled))
-        print(f"\r  [{bar}] {int(done / total * 100):3}%  ({done}/{total})", end='', flush=True)
-    print()
+            source_path      = os.path.join(root, name)
+            new_name         = name if root == source_directory else f"{os.path.basename(root)}_{name}"
+            destination_path = os.path.join(target_directory, new_name)
 
-print(f"\n  {bold(green('Finished!'))}\n")
+            if os.path.exists(destination_path):
+                base, ext = os.path.splitext(new_name)
+                counter = 1
+                while os.path.exists(destination_path):
+                    destination_path = os.path.join(target_directory, f"{base}_{counter}{ext}")
+                    counter += 1
+
+            files_to_copy.append((source_path, destination_path))
+
+    # ── Copy with progress bar ────────────────────────────────────────────────
+    section("Copying")
+    total = len(files_to_copy)
+
+    if total == 0:
+        print(f"  {dim('No files found to copy.')}")
+    else:
+        print(f"  Copying {bold(str(total))} file(s)...\n")
+        bar_width = 40
+        copy_failures = []
+        for i, (src, dst) in enumerate(files_to_copy):
+            try:
+                shutil.copy(src, dst)
+            except (OSError, shutil.Error) as e:
+                copy_failures.append((src, str(e)))
+            done   = i + 1
+            filled = int(bar_width * done / total)
+            bar    = green('█' * filled) + dim('░' * (bar_width - filled))
+            print(f"\r  [{bar}] {int(done / total * 100):3}%  ({done}/{total})", end='', flush=True)
+        print()
+
+        if copy_failures:
+            print(f"\n  {red('⚠')} {len(copy_failures)} file(s) could not be copied:\n")
+            for path, error in copy_failures:
+                print(f"    {red('✗')}  {path}")
+                print(f"       {dim(error)}")
+            print()
+
+    print(f"\n  {bold(green('Finished!'))}\n")
