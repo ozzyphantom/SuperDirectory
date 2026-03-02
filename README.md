@@ -33,7 +33,7 @@ Files in the root of the source directory keep their original names. Files from 
 ## Why
 
 1. I created this utility to help me skim through scrapes of proprietary/obscure technical documentation. I use these scrapes to assist in my work troubleshooting and solution engineering communication between aging hardware with modern networking infrastructure. These databases are often nested in tens or hundreds of subdirectories, many of which are unrelated to products I work with or are aged out of relevancy. This utility allows me to sort through directories with ease while keeping a backup of the entire documentation system structure if needed. Copying these files into a SuperDirectory allows for easy multi-file uploads to services such as NotebookLM to ask questions of the database without including irrelevant documents. 
-2. This script was built partially as a UX design showcase using Claude Code. The included [UX Adjustment History](./UX-Adjustment-History.md) document showcases follow up prompts during testing of the application to make this script as user-friendly and fun to use as possible. 
+2. This script was built partially as a UX design showcase using Claude Code. The included [UX Adjustment History](UX-Adjustment-History.md) document showcases follow up prompts during testing of the application to make this script as user-friendly and fun to use as possible. 
 
 ## Features
 
