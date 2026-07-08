@@ -95,9 +95,14 @@ func Run(opts Options) (string, error) {
 	}
 }
 
+// subdirsUnknown marks an entry whose subfolder count has not been looked up
+// yet. Counting costs a directory read, which is free locally and expensive over
+// USB, so it is deferred until the row is about to be drawn.
+const subdirsUnknown = -1
+
 type entry struct {
 	name    string
-	subdirs int
+	subdirs int // subdirsUnknown until counted; see fillVisibleCounts
 }
 
 type model struct {
@@ -108,6 +113,11 @@ type model struct {
 	offset  int
 	height  int
 	loadErr error // set when the current directory could not be read
+
+	// counts memoizes subfolder counts by absolute path, so re-entering a
+	// directory — or scrolling back over a row — costs nothing. The browser is
+	// read-only and short-lived, so entries are never invalidated.
+	counts map[string]int
 
 	// name-entry sub-mode
 	naming bool
@@ -362,6 +372,12 @@ func (m *model) jump(r rune) {
 	}
 }
 
+// load reads the current directory — and nothing else. It deliberately does NOT
+// count each child's subfolders: that used to cost one directory read per child,
+// so entering a folder with 120 subfolders issued 121 reads. Locally that is
+// microseconds; on a USB drive each read is a bus round trip (and a seek, on a
+// spinning disk), which made navigation crawl. Counts are filled in for the rows
+// actually on screen, by fillVisibleCounts.
 func (m *model) load() {
 	entries, err := os.ReadDir(m.dir)
 	m.loadErr = err
@@ -374,16 +390,36 @@ func (m *model) load() {
 		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
-		items = append(items, entry{
-			name:    e.Name(),
-			subdirs: countSubdirs(filepath.Join(m.dir, e.Name())),
-		})
+		items = append(items, entry{name: e.Name(), subdirs: subdirsUnknown})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		return strings.ToLower(items[i].name) < strings.ToLower(items[j].name)
 	})
 	m.items = items
-	m.clampScroll()
+	m.clampScroll() // also fills counts for the first visible window
+}
+
+// fillVisibleCounts looks up the subfolder count for each row currently in the
+// viewport, memoizing the result. The work is bounded by the terminal height
+// rather than by directory size, so a folder with 10,000 children costs the same
+// as one with 10. Scrolling pays for newly revealed rows once.
+func (m *model) fillVisibleCounts() {
+	if m.counts == nil {
+		m.counts = map[string]int{}
+	}
+	end := min(m.offset+m.height, len(m.items))
+	for i := m.offset; i < end; i++ {
+		if m.items[i].subdirs != subdirsUnknown {
+			continue
+		}
+		path := filepath.Join(m.dir, m.items[i].name)
+		n, ok := m.counts[path]
+		if !ok {
+			n = countSubdirs(path)
+			m.counts[path] = n
+		}
+		m.items[i].subdirs = n
+	}
 }
 
 func (m *model) clampScroll() {
@@ -402,6 +438,10 @@ func (m *model) clampScroll() {
 	if m.offset < 0 {
 		m.offset = 0
 	}
+	// The viewport is now settled, so this is the moment we know which rows need
+	// a subfolder count. Every path that moves the cursor or resizes the window
+	// funnels through here.
+	m.fillVisibleCounts()
 }
 
 // countSubdirs reports how many immediate subdirectories dir has, so the

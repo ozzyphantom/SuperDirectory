@@ -48,6 +48,51 @@ type node struct {
 	hasSubdirs  bool
 	fileCount   int
 	subdirCount int
+
+	// counted guards the three fields above. Establishing them costs a directory
+	// read, so it is deferred until the row is about to be drawn or the user tries
+	// to open it — see ensureCounted.
+	counted bool
+
+	// previewFiles memoizes the node's file listing for the preview pane.
+	// previewHeight and renderPreview both need it on every frame; reading the
+	// directory twice per keystroke is imperceptible locally and painful on a
+	// USB drive.
+	previewFiles  []string
+	previewLoaded bool
+}
+
+// ensureCounted fills a node's file/subdirectory counts, reading its directory at
+// most once. Expanding a folder with 120 children used to read all 120 up front to
+// label them; now each is read only when its row reaches the screen, so the cost is
+// bounded by the terminal height instead of the directory size.
+func ensureCounted(n *node) {
+	if n.counted {
+		return
+	}
+	n.counted = true
+	f, d := countChildren(n.path)
+	n.fileCount, n.subdirCount, n.hasSubdirs = f, d, d > 0
+}
+
+// previewFilesOf returns the node's copyable files, reading the directory at most
+// once for the life of the tree.
+func previewFilesOf(n *node) []string {
+	if n.previewLoaded {
+		return n.previewFiles
+	}
+	n.previewLoaded = true
+	entries, err := os.ReadDir(n.path)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !fsmeta.IsMetadata(e.Name()) {
+			n.previewFiles = append(n.previewFiles, e.Name())
+		}
+	}
+	sort.Strings(n.previewFiles)
+	return n.previewFiles
 }
 
 type model struct {
@@ -166,6 +211,7 @@ func (m *model) View() string {
 		end = len(m.visible)
 	}
 	for i := m.offset; i < end; i++ {
+		ensureCounted(m.visible[i]) // only the rows actually on screen
 		b.WriteString(m.renderNode(m.visible[i], i == m.cursor))
 	}
 	if len(m.visible) > rows {
@@ -243,17 +289,7 @@ func (m *model) renderNode(n *node, focused bool) string {
 const previewMax = 10
 
 func (m *model) renderPreview(n *node) string {
-	entries, err := os.ReadDir(n.path)
-	if err != nil {
-		return ""
-	}
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && !fsmeta.IsMetadata(e.Name()) {
-			files = append(files, e.Name())
-		}
-	}
-	sort.Strings(files)
+	files := previewFilesOf(n)
 
 	var b strings.Builder
 	b.WriteString("\n  " + titleStyle.Render("Preview: "+n.name) + "\n")
@@ -294,6 +330,7 @@ func (m *model) expandCurrent() {
 		return
 	}
 	n := m.visible[m.cursor]
+	ensureCounted(n) // hasSubdirs is meaningless until this runs
 	if !n.hasSubdirs {
 		return
 	}
@@ -380,18 +417,9 @@ func (m *model) listRows() int {
 // node, so listRows can reserve exactly that much.
 func (m *model) previewHeight() int {
 	const header = 2 // blank + "Preview: name"
-	entries, err := os.ReadDir(m.preview.path)
-	if err != nil {
-		return header
-	}
-	// Must count exactly what renderPreview lists, or the reserved height and the
-	// rendered height disagree and the help line falls off the screen.
-	files := 0
-	for _, e := range entries {
-		if !e.IsDir() && !fsmeta.IsMetadata(e.Name()) {
-			files++
-		}
-	}
+	// Reads the same memoized listing renderPreview draws, so the reserved height
+	// and the rendered height cannot disagree and push the help line off screen.
+	files := len(previewFilesOf(m.preview))
 	switch {
 	case files == 0:
 		return header + 1 // "(no files…)"
@@ -433,16 +461,14 @@ func loadChildren(n *node) {
 		if fsmeta.IsMetadata(e.Name()) {
 			continue
 		}
-		full := filepath.Join(n.path, e.Name())
-		f, d := countChildren(full)
+		// Counts are left unset here on purpose: filling them would read every
+		// child directory, one bus round trip each on an external drive, before a
+		// single row is drawn. ensureCounted fills them as rows reach the screen.
 		kids = append(kids, &node{
-			path:        full,
-			name:        e.Name(),
-			depth:       n.depth + 1,
-			parent:      n,
-			hasSubdirs:  d > 0,
-			fileCount:   f,
-			subdirCount: d,
+			path:   filepath.Join(n.path, e.Name()),
+			name:   e.Name(),
+			depth:  n.depth + 1,
+			parent: n,
 		})
 	}
 	sort.Slice(kids, func(i, j int) bool { return kids[i].name < kids[j].name })

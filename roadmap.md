@@ -123,6 +123,35 @@ binaries — a bare `os.WriteFile` triggers it, so it is not the copy logic, and
 code-signing does not clear it. Invisible in Finder. Possibly resolved by Developer ID
 notarization; retest at that point.
 
+## Navigation performance (2026-07-08) — fixed
+
+Browsing an external drive was slow. The cause was I/O amplification in the TUI, not the
+copy: three places read every child directory to render a label.
+
+`pick.load()` counted each child's subfolders to print "(3 subfolders)". Entering a folder
+with 120 children issued **121 directory reads** to draw 15 rows. `exclude.loadChildren` did
+the same on every expand. `wizard.topLevelSubdirs` built a `[]subdir` carrying per-directory
+file and folder counts **that no caller ever read** — 121 reads to compute one integer for a
+description string. And the exclusion preview read its directory **twice per keystroke**,
+because `previewHeight` and `renderPreview` each called `os.ReadDir` independently.
+
+Locally these cost microseconds. On a USB drive each read is a bus round trip, and a seek on
+a spinning disk.
+
+The fix is the same idea in each place: **bound the work by the terminal height, not the
+directory size.** Counts are deferred until a row is about to be drawn (`fillVisibleCounts`,
+`ensureCounted`) and memoized, so scrolling pays once per revealed row and re-entering a
+directory is free. The preview listing is cached on its node. The wizard's dead helper is
+gone entirely, along with `subdir`, `topLevelSubdirs`, and `topLevelHasSubdirs`.
+
+Measured cold on an exFAT volume, 120 subfolders: `pick.load()` 121 reads / 79 ms → 16 reads
+/ 16 ms; `loadChildren` 121 reads → 1 read / 1.2 ms. Regression tests assert the visible-row
+bound directly, and fail if the eager behavior returns.
+
+A side effect worth noting: `previewHeight` used to return 2 lines on a read error while
+`renderPreview` drew 0, silently misaligning the layout. Sharing one memoized listing removed
+the disagreement, and a test now pins reserved height to rendered height.
+
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser

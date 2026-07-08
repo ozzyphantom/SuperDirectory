@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -68,6 +67,7 @@ func Run() (*Result, error) {
 		target         string
 		excluded       = map[string]bool{}
 		hasSubs        bool
+		subCount       int
 		keepSourceTree bool
 	)
 
@@ -115,7 +115,8 @@ func Run() (*Result, error) {
 				target = ""
 			}
 			source = s
-			hasSubs = topLevelHasSubdirs(source)
+			subCount = topLevelSubdirCount(source)
+			hasSubs = subCount > 0
 			step = stepDest
 
 		case stepDest:
@@ -136,7 +137,7 @@ func Run() (*Result, error) {
 				step = stepLayout
 				continue
 			}
-			ex, err := askExclusions(source, excluded)
+			ex, err := askExclusions(source, excluded, subCount)
 			if errors.Is(err, errBack) {
 				step = stepDest
 				continue
@@ -303,8 +304,7 @@ func askDestination(source, prevTarget string) (string, error) {
 	return target, nil
 }
 
-func askExclusions(source string, current map[string]bool) (map[string]bool, error) {
-	subs, _ := topLevelSubdirs(source)
+func askExclusions(source string, current map[string]bool, subCount int) (map[string]bool, error) {
 	empty := map[string]bool{}
 
 	for {
@@ -312,7 +312,7 @@ func askExclusions(source string, current map[string]bool) (map[string]bool, err
 		form := huh.NewForm(huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Exclude any subdirectories?").
-				Description(fmt.Sprintf("%d at the top level. You can descend to any depth.", len(subs))).
+				Description(fmt.Sprintf("%d at the top level. You can descend to any depth.", subCount)).
 				Options(
 					huh.NewOption("No — copy everything", "no"),
 					huh.NewOption("Yes — choose what to skip", "yes"),
@@ -436,62 +436,29 @@ func Theme() *huh.Theme {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-type subdir struct {
-	name    string
-	path    string
-	files   int
-	subdirs int
-}
-
-func topLevelSubdirs(source string) ([]subdir, error) {
+// topLevelSubdirCount reports how many copyable subdirectories source has at its
+// top level: enough to decide whether the exclusion screen is worth showing, and
+// what number to put in its description.
+//
+// It reads source once and opens nothing beneath it. The version this replaced
+// built a []subdir carrying per-directory file and folder counts that no caller
+// ever read, at the price of one directory read per subdirectory — on an external
+// drive, a bus round trip each, paid before the exclusion screen would even
+// appear. A drive root with 120 folders cost 121 reads to render one integer.
+func topLevelSubdirCount(source string) int {
 	entries, err := os.ReadDir(source)
 	if err != nil {
-		return nil, err
+		return 0
 	}
-	var out []subdir
-	for _, e := range entries {
-		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || fsmeta.IsMetadata(e.Name()) {
-			continue
-		}
-		full := filepath.Join(source, e.Name())
-		f, d := countChildren(full)
-		out = append(out, subdir{name: e.Name(), path: full, files: f, subdirs: d})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
-	return out, nil
-}
-
-func topLevelHasSubdirs(source string) bool {
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		return false
-	}
+	n := 0
 	for _, e := range entries {
 		// A drive root whose only subdirectory is .fseventsd has nothing worth
 		// excluding, so the exclusion screen must not appear for it.
 		if e.IsDir() && e.Type()&os.ModeSymlink == 0 && !fsmeta.IsMetadata(e.Name()) {
-			return true
+			n++
 		}
 	}
-	return false
-}
-
-func countChildren(dir string) (files, dirs int) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0, 0
-	}
-	for _, e := range entries {
-		if fsmeta.IsMetadata(e.Name()) {
-			continue
-		}
-		if e.IsDir() {
-			dirs++
-		} else {
-			files++
-		}
-	}
-	return files, dirs
+	return n
 }
 
 func home() string {

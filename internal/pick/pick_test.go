@@ -1,6 +1,7 @@
 package pick
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -203,5 +204,92 @@ func TestEmptyNameRejectedWithoutValidate(t *testing.T) {
 	}
 	if m.errMsg == "" {
 		t.Error("empty name should surface an error")
+	}
+}
+
+// buildWideTree makes a directory with n subdirectories, each holding one
+// sub-subdirectory so that a subfolder count is non-zero once taken.
+func buildWideTree(t *testing.T, n int) string {
+	t.Helper()
+	root := t.TempDir()
+	for i := 0; i < n; i++ {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir-%03d", i), "child"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+func counted(m *model) int {
+	n := 0
+	for _, it := range m.items {
+		if it.subdirs != subdirsUnknown {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLoadCountsOnlyVisibleRows is a performance regression test with teeth.
+// load() used to read every child directory to label it "(N subfolders)": entering
+// a folder with 120 children issued 121 directory reads. Locally that is
+// microseconds; over USB each read is a bus round trip, and navigation crawled.
+//
+// Work must now be bounded by the terminal height, not the directory size.
+func TestLoadCountsOnlyVisibleRows(t *testing.T) {
+	const total, height = 120, 15
+	root := buildWideTree(t, total)
+
+	m := &model{dir: root, height: height}
+	m.load()
+
+	if len(m.items) != total {
+		t.Fatalf("expected %d entries, got %d", total, len(m.items))
+	}
+	if got := counted(m); got != height {
+		t.Errorf("counted %d rows after load, want exactly the %d visible ones "+
+			"— a directory read per child is what made USB drives crawl", got, height)
+	}
+	// Rows below the fold must still be unknown, not silently zero: a zero would
+	// render as "no subfolders" for a folder that has them.
+	if m.items[total-1].subdirs != subdirsUnknown {
+		t.Errorf("offscreen row was counted eagerly: %d", m.items[total-1].subdirs)
+	}
+	// The visible ones must carry the real count, not a placeholder.
+	if m.items[0].subdirs != 1 {
+		t.Errorf("visible row should report its 1 subfolder, got %d", m.items[0].subdirs)
+	}
+}
+
+// TestScrollingFillsAndMemoizes: revealed rows get counted once, and re-visiting
+// a directory costs nothing.
+func TestScrollingFillsAndMemoizes(t *testing.T) {
+	const total, height = 60, 10
+	root := buildWideTree(t, total)
+
+	m := &model{dir: root, height: height}
+	m.load()
+	if got := counted(m); got != height {
+		t.Fatalf("after load: counted %d, want %d", got, height)
+	}
+
+	// Scroll to the bottom; newly revealed rows fill in.
+	m.cursor = total - 1
+	m.clampScroll()
+	if m.items[total-1].subdirs != 1 {
+		t.Errorf("row scrolled into view was not counted")
+	}
+
+	// Every path we ever counted is memoized, so re-entering is free.
+	if len(m.counts) == 0 {
+		t.Fatal("expected the count cache to be populated")
+	}
+	before := len(m.counts)
+	m.load() // re-enter the same directory
+	if got := counted(m); got != height {
+		t.Errorf("re-entry counted %d rows, want %d", got, height)
+	}
+	if len(m.counts) != before {
+		t.Errorf("re-entry re-read directories: cache grew %d -> %d", before, len(m.counts))
 	}
 }
