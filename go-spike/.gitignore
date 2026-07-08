@@ -1,0 +1,5 @@
+# built binaries
+/superdirectory
+/superdirectory.exe
+/sd-*
+*.exe
