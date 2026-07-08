@@ -69,7 +69,8 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 - **Exclusion system** — selectively skip subdirectories at any depth, with a recursive tree
 - **Directory preview** — inspect directory contents before deciding to include or exclude
 - **External-drive ready** — works on exFAT and FAT32, skips the metadata macOS and Windows leave on a drive, and preserves modification times
-- **Live throughput** — the progress bar reports MB/s, bytes copied, and an estimated time remaining, so a slow drive is visibly a slow drive
+- **Live throughput** — the progress bar reports MB/s, bytes copied, the file in flight, and an estimated time remaining, so a slow drive is visibly a slow drive
+- **Survives a bad file** — a file that stops delivering data is abandoned after 60s, recorded, and the copy carries on
 - **Safe by default** — refuses a destination inside the source, so a copy can never eat itself
 
 ## Requirements
@@ -171,6 +172,16 @@ Filesystem bookkeeping is skipped too, in both modes. This matters most on exter
 Dotfiles you wrote are *not* metadata: `.gitignore`, `.env`, and `.git/` are copied normally. And if you deliberately choose a metadata directory as your source — say you point at `.Trashes` to recover something — its contents are copied.
 
 Modification times are preserved, so an archived superdirectory remembers when its files were written rather than claiming they all appeared today. Permissions are preserved where the destination filesystem can store them; exFAT and FAT32 cannot, and will show their mount-wide defaults.
+
+## When a file will not read
+
+A copy no longer hangs on one bad file. If a file delivers no data for 60 seconds it is abandoned, its partial destination is deleted, it is recorded in the failures list, and the copy carries on.
+
+```
+  [██░░░░░░░░]  9%  1084/11041  1.2 GB  — MB/s  ⚠ no data for 47s  DSC_4418.NEF
+```
+
+This cannot interrupt the read itself. Go's `SetReadDeadline` works only on pipes and sockets, never on a regular file, and no syscall unblocks a read parked in a disk retry. The file's copy runs on its own goroutine and is *abandoned* — a deliberate, bounded leak that beats hanging the whole program on one bad sector.
 
 ## Application Structure
 

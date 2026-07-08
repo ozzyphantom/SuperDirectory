@@ -206,6 +206,51 @@ below one second and until three files have landed.
 Not done, deliberately: parallel copies. Concurrency can raise throughput on flash and lower
 it on a spinning disk, and nothing here has been measured against real hardware.
 
+**Round two — the bar could not tell a big file from a hang.** Progress was reported only
+after each file returned. Through one large file the bar, the byte count, and the rate all
+froze at their last values, naming nothing. A copy stopped dead at "9%, 1084/11041" gave no
+way to tell a 4 GB panorama from an unreadable sector, and sent the user to `lsof`.
+
+`Copy` now reports *before* opening each file, so the name of a file that then blocks is
+already on screen; periodically while a file over 8 MiB streams, so a big file visibly moves;
+and once on completion. Below that threshold `io.CopyBuffer` is used instead, which lets
+Linux's `copy_file_range` engage — a chunked loop would disable it, and small files finish
+faster than a frame anyway. The display rate-limits itself to ~16 fps, because `Copy` now
+reports thousands of times a second on a folder of small files.
+
+The meter tracks stalls separately from throughput: the rate is resampled every 300 ms, but a
+stall is measured from the last byte that actually *moved*. After five still seconds the line
+reads `⚠ no data for 47s` beside the filename, and drops the ETA, which would be a fiction.
+That turns "the app hung" into "this one file will not read".
+
+## Stall timeout (2026-07-08) — done
+
+A copy stopped dead at 1084/11041 files, twice, at the same file, with the drive cool. Not
+thermal — heat is not deterministic. One file would not read.
+
+**The trigger is a stall, not a deadline.** A 4 GB panorama on a throttled drive legitimately
+takes minutes; a file delivering no bytes for a minute is stuck. `Options.StallTimeout`
+(default 60s) abandons it, records a `StallError` in the failures, and moves on.
+
+**Go cannot cancel a blocked read on a regular file.** `SetReadDeadline` works only on
+pollable descriptors — pipes and sockets — and no syscall unblocks a read parked in a disk
+retry. So each file copies on its own goroutine and is *abandoned*: descriptors closed,
+partial destination removed, `Copy` moves on. The goroutine stays parked in the kernel until
+the read finally returns. That is a deliberate leak, bounded by the number of unreadable
+files, and it beats hanging the whole program on one bad sector. A `sync.Pool` supplies copy
+buffers precisely because an abandoned job may still be reading into its buffer long after
+`Copy` has moved to the next file.
+
+**A test found a real bug in the first draft.** Files under 8 MiB used `io.CopyBuffer`, which
+reports its bytes once, at the end — so the counter sat at zero for the file's whole life and
+the stall detector abandoned a slow-but-healthy file. On a sick drive a 7 MB file can take
+over a minute. Enabling stall detection now forces every file through the chunked loop. The
+cost is Linux's `copy_file_range` for small files: you cannot both hand the copy to the kernel
+and watch it progress. That trade is recorded in `Options.StallTimeout`.
+
+Partial destinations are now removed on any failure. A silently truncated photo sitting in the
+output is worse than a missing one that is named in the failures.
+
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser

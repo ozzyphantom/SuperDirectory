@@ -98,19 +98,23 @@ func runOnce() (string, bool) {
 		return "", false
 	}
 
-	total := len(items)
 	fmt.Println()
-	if total == 0 {
+	if len(items) == 0 {
 		fmt.Println("  " + dim.Render("No files found to copy."))
 		return res.Target, true
 	}
+
+	total := len(items)
 	fmt.Printf("  Copying %s file(s) into %s\n\n", bold.Render(fmt.Sprintf("%d", total)), orange.Render(res.Target))
 
-	meter := &rateMeter{}
+	drawer := &progressDrawer{}
 	var last flatten.Progress
-	failures := flatten.Copy(res.Target, items, func(p flatten.Progress) {
-		last = p
-		renderProgress(p, meter.observe(p))
+	failures := flatten.Copy(res.Target, items, flatten.Options{
+		StallTimeout: flatten.DefaultStallTimeout,
+		OnProgress: func(p flatten.Progress) {
+			last = p
+			drawer.draw(p)
+		},
 	})
 	if len(failures) > 0 {
 		fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
@@ -196,25 +200,46 @@ func openInFileManager(target string, reveal bool) {
 	_ = cmd.Process.Release()
 }
 
-// rateMeter smooths throughput for display. A lifetime average hides exactly what
-// you want to see on an external drive — the moment it slows down, whether from
-// thermal throttling, a run of small files, or a full write cache. It reports a
-// recent rate instead.
+// stallAfter is how long the byte counter may sit still before the display says so.
+// A copy blocked on an unreadable sector can hold the kernel in a retry loop for
+// minutes; without this the user sees only a progress bar that stopped, and no way
+// to tell a broken file from a big one.
+const stallAfter = 5 * time.Second
+
+// rateMeter smooths throughput for display, and notices when it stops entirely.
+//
+// A lifetime average hides exactly what you want to see on an external drive — the
+// moment it slows down, whether from thermal throttling, a run of small files, or a
+// full write cache. It reports a recent rate instead.
 type rateMeter struct {
 	lastAt    time.Duration
 	lastBytes int64
 	rate      float64 // exponentially-smoothed bytes/sec
+
+	// Stall tracking is deliberately separate from rate smoothing. The rate is only
+	// resampled every 300ms, but a stall must be measured from the last byte that
+	// actually moved, however long ago that was.
+	seenBytes    int64
+	lastMovement time.Duration
 }
 
-// observe folds one progress report into the smoothed rate. Samples closer than
-// resampleAfter are accumulated rather than measured, because a burst of tiny
-// files arriving within a millisecond of each other produces a meaningless
-// instantaneous rate.
-func (m *rateMeter) observe(p flatten.Progress) float64 {
+// observe folds one progress report into the meter, returning the smoothed rate and
+// how long the byte counter has been frozen.
+//
+// Samples closer than resampleAfter are accumulated rather than measured, because a
+// burst of tiny files arriving within a millisecond of each other produces a
+// meaningless instantaneous rate.
+func (m *rateMeter) observe(p flatten.Progress) (rate float64, stalled time.Duration) {
 	const resampleAfter = 300 * time.Millisecond
+
+	if p.Bytes != m.seenBytes {
+		m.seenBytes, m.lastMovement = p.Bytes, p.Elapsed
+	}
+	stalled = p.Elapsed - m.lastMovement
+
 	dt := p.Elapsed - m.lastAt
 	if dt < resampleAfter && m.rate != 0 {
-		return m.rate
+		return m.rate, stalled
 	}
 	if secs := dt.Seconds(); secs > 0 {
 		instant := float64(p.Bytes-m.lastBytes) / secs
@@ -225,36 +250,76 @@ func (m *rateMeter) observe(p flatten.Progress) float64 {
 		}
 	}
 	m.lastAt, m.lastBytes = p.Elapsed, p.Bytes
-	return m.rate
+	return m.rate, stalled
 }
 
-// renderProgress draws the progress line. The bar tracks files, not bytes: knowing
-// the total byte count in advance would cost an lstat per file before the copy
-// began — measured at 43x the cost of the walk itself on exFAT — which is a poor
-// trade on the very drives where progress matters most.
-func renderProgress(p flatten.Progress, rate float64) {
-	// Erase to end of line: the text shrinks as the ETA does, and leftovers from a
-	// longer previous frame would otherwise linger.
-	fmt.Print("\r" + progressLine(p, rate) + "\033[K")
-	if p.Done == p.Total {
+// progressDrawer rate-limits terminal writes. Copy now reports before, during, and
+// after every file — thousands of times a second on a folder of small files — and
+// redrawing that often would make the terminal the bottleneck.
+type progressDrawer struct {
+	meter    rateMeter
+	lastDraw time.Duration
+}
+
+func (d *progressDrawer) draw(p flatten.Progress) {
+	const minFrameGap = 60 * time.Millisecond
+	rate, stalled := d.meter.observe(p)
+
+	final := p.Done == p.Total
+	if !final && p.Elapsed-d.lastDraw < minFrameGap {
+		return
+	}
+	d.lastDraw = p.Elapsed
+
+	// Erase to end of line: the text shrinks as the ETA and filename do, and
+	// leftovers from a longer previous frame would otherwise linger.
+	fmt.Print("\r" + progressLine(p, rate, stalled) + "\033[K")
+	if final {
 		fmt.Println()
 	}
 }
 
-// progressLine builds the progress display. Split from renderProgress so it can be
+// progressLine builds the progress display. Split from the drawer so it can be
 // tested without capturing stdout.
-func progressLine(p flatten.Progress, rate float64) string {
-	const width = 40
+//
+// The bar tracks files, not bytes: knowing the total byte count in advance would
+// cost an lstat per file before the copy began — measured at 43x the cost of the
+// walk itself on exFAT — a poor trade on the very drives where progress matters.
+func progressLine(p flatten.Progress, rate float64, stalled time.Duration) string {
+	const width = 30
 	filled := width * p.Done / p.Total
 	bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
 
 	line := fmt.Sprintf("  [%s] %3d%%  %d/%d  %s  %s",
 		bar, p.Done*100/p.Total, p.Done, p.Total,
 		dim.Render(humanBytes(p.Bytes)), bold.Render(humanRate(rate)))
-	if eta, ok := estimateRemaining(p); ok {
+
+	if stalled >= stallAfter {
+		// Say it loudly, and say what it is stuck on. This is the difference
+		// between "the app hung" and "this one file will not read".
+		line += red.Render(fmt.Sprintf("  ⚠ no data for %s", humanDuration(stalled)))
+	} else if eta, ok := estimateRemaining(p); ok {
 		line += dim.Render("  ~" + humanDuration(eta) + " left")
 	}
+	if p.Current != "" && p.Done < p.Total {
+		line += "  " + dim.Render(truncateMiddle(p.Current, 28))
+	}
 	return line
+}
+
+// truncateMiddle shortens a filename while keeping its extension visible, because
+// the extension is what tells you whether this is the 40 MB raw or the thumbnail.
+// It counts runes, not bytes: filenames are UTF-8, and slicing bytes would cut a
+// character in half and print a replacement glyph.
+func truncateMiddle(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max || max < 5 {
+		return s
+	}
+	keep := max - 1 // room for the ellipsis
+	head := keep / 2
+	tail := keep - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
 }
 
 // estimateRemaining extrapolates from files completed, not bytes, because the

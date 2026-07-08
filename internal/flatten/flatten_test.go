@@ -1,6 +1,8 @@
 package flatten
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -209,7 +211,7 @@ func TestCopyPreservesModTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := Copy(target, items, nil); len(f) != 0 {
+	if f := Copy(target, items, Options{}); len(f) != 0 {
 		t.Fatalf("unexpected failures: %v", f)
 	}
 
@@ -231,7 +233,7 @@ func TestCopyProducesFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := t.TempDir()
-	failures := Copy(target, items, nil)
+	failures := Copy(target, items, Options{})
 	if len(failures) != 0 {
 		t.Fatalf("unexpected copy failures: %v", failures)
 	}
@@ -241,12 +243,47 @@ func TestCopyProducesFiles(t *testing.T) {
 	}
 }
 
-// TestCopyReportsBytesAndProgress: the throughput shown to the user is derived
-// from these numbers, so they must count only what actually reached the disk.
+// TestCopyAnnouncesEachFileBeforeReadingIt. A file that blocks forever in read
+// produces no completion report, so if the name were only sent afterwards the user
+// would stare at a frozen bar naming nothing. The announce must come first.
+func TestCopyAnnouncesEachFileBeforeReadingIt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "only.bin"), make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []Progress
+	Copy(t.TempDir(), items, Options{OnProgress: func(p Progress) { seen = append(seen, p) }})
+	if len(seen) < 2 {
+		t.Fatalf("expected at least an announce and a completion, got %d", len(seen))
+	}
+
+	first := seen[0]
+	if first.Current != "only.bin" {
+		t.Errorf("first report should name the file: Current=%q", first.Current)
+	}
+	if first.Done != 0 {
+		t.Errorf("first report is an announce, not a completion: Done=%d, want 0", first.Done)
+	}
+	if first.Bytes != 0 {
+		t.Errorf("nothing is copied yet: Bytes=%d, want 0", first.Bytes)
+	}
+
+	last := seen[len(seen)-1]
+	if last.Done != 1 || last.Total != 1 || last.Bytes != 100 {
+		t.Errorf("final report wrong: %+v", last)
+	}
+}
+
+// TestCopyReportsBytesAndProgress: the throughput shown to the user is derived from
+// these numbers, so they must count only what actually reached the disk.
 func TestCopyReportsBytesAndProgress(t *testing.T) {
 	root := t.TempDir()
-	sizes := []int{100, 250, 650} // 1000 bytes total
-	for i, n := range sizes {
+	for i, n := range []int{100, 250, 650} { // 1000 bytes total
 		name := filepath.Join(root, string(rune('a'+i))+".bin")
 		if err := os.WriteFile(name, make([]byte, n), 0o644); err != nil {
 			t.Fatal(err)
@@ -258,34 +295,32 @@ func TestCopyReportsBytesAndProgress(t *testing.T) {
 	}
 
 	var seen []Progress
-	failures := Copy(t.TempDir(), items, func(p Progress) { seen = append(seen, p) })
+	failures := Copy(t.TempDir(), items, Options{OnProgress: func(p Progress) { seen = append(seen, p) }})
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
-	if len(seen) != 3 {
-		t.Fatalf("expected 3 progress reports, got %d", len(seen))
-	}
 
-	for i, p := range seen {
-		if p.Done != i+1 || p.Total != 3 {
-			t.Errorf("report %d: Done=%d Total=%d", i, p.Done, p.Total)
+	for _, p := range seen {
+		if p.Total != 3 {
+			t.Errorf("Total=%d, want 3", p.Total)
 		}
-		if p.Elapsed <= 0 {
-			t.Errorf("report %d: Elapsed must advance, got %v", i, p.Elapsed)
+		if p.Elapsed < 0 {
+			t.Errorf("Elapsed went backwards: %v", p.Elapsed)
 		}
 	}
 	// Bytes accumulate monotonically and finish at the true total.
-	if last := seen[len(seen)-1]; last.Bytes != 1000 {
-		t.Errorf("final Bytes = %d, want 1000", last.Bytes)
-	}
 	for i := 1; i < len(seen); i++ {
 		if seen[i].Bytes < seen[i-1].Bytes {
 			t.Errorf("Bytes went backwards: %d -> %d", seen[i-1].Bytes, seen[i].Bytes)
 		}
 	}
+	last := seen[len(seen)-1]
+	if last.Bytes != 1000 || last.Done != 3 {
+		t.Errorf("final report: Bytes=%d Done=%d, want 1000 and 3", last.Bytes, last.Done)
+	}
 }
 
-// TestCopyDoesNotCountFailedBytes: a file that could not be written must not
+// TestCopyDoesNotCountFailedBytes: a file that could not be opened must not
 // contribute to throughput, or a failing copy would look fast.
 func TestCopyDoesNotCountFailedBytes(t *testing.T) {
 	root := t.TempDir()
@@ -296,11 +331,10 @@ func TestCopyDoesNotCountFailedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Point one item at a source that cannot be opened.
 	items = append(items, Item{Src: filepath.Join(root, "does-not-exist.bin"), Dst: "gone.bin"})
 
 	var last Progress
-	failures := Copy(t.TempDir(), items, func(p Progress) { last = p })
+	failures := Copy(t.TempDir(), items, Options{OnProgress: func(p Progress) { last = p }})
 	if len(failures) != 1 {
 		t.Fatalf("expected 1 failure, got %d", len(failures))
 	}
@@ -308,6 +342,70 @@ func TestCopyDoesNotCountFailedBytes(t *testing.T) {
 		t.Errorf("Bytes = %d, want 500 — a failed file inflated the throughput", last.Bytes)
 	}
 	if last.Done != 2 || last.Total != 2 {
-		t.Errorf("failed files still count as attempted: Done=%d Total=%d", last.Done, last.Total)
+		t.Errorf("attempted files still advance the counter: Done=%d Total=%d", last.Done, last.Total)
 	}
+}
+
+// TestStreamCopyReportsEveryChunk pins the mechanism that lets a multi-gigabyte
+// file show movement: each chunk written is reported as it lands.
+func TestStreamCopyReportsEveryChunk(t *testing.T) {
+	const chunks = 5
+	src := bytes.NewReader(make([]byte, chunks*streamChunk))
+	buf := make([]byte, streamChunk)
+
+	var reports []int64
+	if err := streamCopy(io.Discard, src, buf, func(n int64) { reports = append(reports, n) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != chunks {
+		t.Fatalf("got %d chunk reports, want %d", len(reports), chunks)
+	}
+	for i, n := range reports {
+		if n != streamChunk {
+			t.Errorf("chunk %d reported %d bytes, want %d", i, n, streamChunk)
+		}
+	}
+}
+
+// TestCopyPollsProgressThroughALargeFile: Copy samples the in-flight file's byte
+// counter, so a single big file moves on screen instead of freezing.
+func TestCopyPollsProgressThroughALargeFile(t *testing.T) {
+	defer swapPollInterval(t, time.Millisecond)()
+
+	root := t.TempDir()
+	size := 64 << 20 // large enough that copying outlasts several 1ms polls
+	if err := os.WriteFile(filepath.Join(root, "big.bin"), make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var midFile []int64
+	Copy(t.TempDir(), items, Options{OnProgress: func(p Progress) {
+		if p.Done == 0 && p.Bytes > 0 { // in flight, not yet completed
+			midFile = append(midFile, p.Bytes)
+		}
+	}})
+
+	if len(midFile) == 0 {
+		t.Fatal("no mid-file progress: a big file still looks like a hang")
+	}
+	for i := 1; i < len(midFile); i++ {
+		if midFile[i] < midFile[i-1] {
+			t.Errorf("mid-file bytes went backwards: %d then %d", midFile[i-1], midFile[i])
+		}
+	}
+	if last := midFile[len(midFile)-1]; last > int64(size) {
+		t.Errorf("reported %d bytes for a %d byte file", last, size)
+	}
+}
+
+// swapPollInterval sets the poll interval for one test and returns a restore func.
+func swapPollInterval(t *testing.T, d time.Duration) func() {
+	t.Helper()
+	old := pollInterval
+	pollInterval = d
+	return func() { pollInterval = old }
 }

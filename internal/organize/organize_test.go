@@ -191,7 +191,7 @@ func TestPlanPooledSurvivesCaseOnlyCollision(t *testing.T) {
 
 	// And copying must actually leave two files, with both contents intact.
 	target := t.TempDir()
-	if f := flatten.Copy(target, items, nil); len(f) != 0 {
+	if f := flatten.Copy(target, items, flatten.Options{}); len(f) != 0 {
 		t.Fatalf("unexpected copy failures: %v", f)
 	}
 	entries, err := os.ReadDir(filepath.Join(target, "Images", "jpg"))
@@ -229,7 +229,7 @@ func TestCopyCreatesNestedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := t.TempDir()
-	if failures := flatten.Copy(target, items, nil); len(failures) != 0 {
+	if failures := flatten.Copy(target, items, flatten.Options{}); len(failures) != 0 {
 		t.Fatalf("unexpected copy failures: %v", failures)
 	}
 
