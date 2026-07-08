@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/exclude"
+	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
 	"github.com/ozzyphantom/SuperDirectory/internal/organize"
 	"github.com/ozzyphantom/SuperDirectory/internal/pick"
 )
@@ -449,7 +450,7 @@ func topLevelSubdirs(source string) ([]subdir, error) {
 	}
 	var out []subdir
 	for _, e := range entries {
-		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 {
+		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || fsmeta.IsMetadata(e.Name()) {
 			continue
 		}
 		full := filepath.Join(source, e.Name())
@@ -466,7 +467,9 @@ func topLevelHasSubdirs(source string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if e.IsDir() && e.Type()&os.ModeSymlink == 0 {
+		// A drive root whose only subdirectory is .fseventsd has nothing worth
+		// excluding, so the exclusion screen must not appear for it.
+		if e.IsDir() && e.Type()&os.ModeSymlink == 0 && !fsmeta.IsMetadata(e.Name()) {
 			return true
 		}
 	}
@@ -479,6 +482,9 @@ func countChildren(dir string) (files, dirs int) {
 		return 0, 0
 	}
 	for _, e := range entries {
+		if fsmeta.IsMetadata(e.Name()) {
+			continue
+		}
 		if e.IsDir() {
 			dirs++
 		} else {

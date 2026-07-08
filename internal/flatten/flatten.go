@@ -16,6 +16,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
 )
 
 // Item is one planned copy: an absolute source path, and the destination
@@ -39,6 +42,14 @@ type Failure struct {
 // PermissionError` behavior. Symlinks, sockets, and devices are skipped — real
 // files only.
 //
+// Filesystem bookkeeping is skipped too: .DS_Store, AppleDouble "._" sidecars,
+// .Spotlight-V100/, $RECYCLE.BIN/ and friends (see package fsmeta). Without this,
+// flattening the root of an external drive copies more operating-system metadata
+// than user files. A metadata directory is pruned entirely, not merely skipped.
+//
+// The source directory itself is never treated as metadata: if the user
+// deliberately points at .Trashes, that is their business.
+//
 // Both planners share this traversal so that exclusion semantics can never
 // drift between them.
 func Walk(source string, excluded map[string]bool, fn func(path string, d os.DirEntry)) error {
@@ -47,12 +58,15 @@ func Walk(source string, excluded map[string]bool, fn func(path string, d os.Dir
 			return nil
 		}
 		if d.IsDir() {
-			if path != source && excluded[path] {
+			if path == source {
+				return nil
+			}
+			if excluded[path] || fsmeta.IsMetadata(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || fsmeta.IsMetadata(d.Name()) {
 			return nil
 		}
 		fn(path, d)
@@ -157,9 +171,9 @@ func ensureParent(made map[string]bool, dir string) error {
 	return nil
 }
 
-// copyFile streams src to dst, preserving the source's permission bits.
-// io.Copy between two *os.File lets the runtime use the kernel fast path
-// (copy_file_range on Linux) where available.
+// copyFile streams src to dst, preserving the source's permission bits and
+// modification time. io.Copy between two *os.File lets the runtime use the kernel
+// fast path (copy_file_range on Linux, fcopyfile on macOS) where available.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -180,5 +194,19 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+
+	// Preserve the modification time. A superdirectory is usually an archive or a
+	// working copy, and a folder where every file claims to be from today is much
+	// less useful than one that remembers when its files were written.
+	//
+	// The zero atime means "leave access time alone" (os.Chtimes documents this).
+	// A failure here is deliberately NOT fatal: the file's contents are already
+	// safely on disk, and reporting the whole copy as failed over a timestamp
+	// would send the user hunting for data that arrived intact. Some filesystems
+	// and mount options simply refuse the update.
+	_ = os.Chtimes(dst, time.Time{}, info.ModTime())
+	return nil
 }

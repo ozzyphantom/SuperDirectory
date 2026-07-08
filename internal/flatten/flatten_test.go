@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 // buildTree writes a small nested fixture and returns its root.
@@ -117,6 +118,109 @@ func TestUniqueIsCaseInsensitive(t *testing.T) {
 	// _1 is already taken case-insensitively by Beach_1.jpg, so this must reach _2.
 	if c != "BEACH_2.JPG" {
 		t.Errorf("suffixed names must also collide case-insensitively, got %q", c)
+	}
+}
+
+// TestWalkSkipsFilesystemMetadata models the root of a Mac-formatted external
+// drive: AppleDouble sidecars beside every real file, plus the hidden service
+// directories macOS and Windows leave behind. None of it should reach the plan.
+func TestWalkSkipsFilesystemMetadata(t *testing.T) {
+	root := t.TempDir()
+	files := []string{
+		"receipt.pdf", // real
+		"notes.txt",   // real
+		"Trip/beach.jpg",
+		"._receipt.pdf", // AppleDouble sidecar
+		"._notes.txt",
+		".DS_Store",
+		"Trip/._beach.jpg",
+		"Trip/.DS_Store",
+		".fseventsd/fseventsd-uuid",
+		".Spotlight-V100/store.db",
+		".Trashes/deleted.pdf",
+		"$RECYCLE.BIN/gone.doc",
+		"System Volume Information/tracking.log",
+		"Thumbs.db",
+	}
+	for _, rel := range files {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(rel), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := planNames(items)
+
+	want := []string{"Trip_beach.jpg", "notes.txt", "receipt.pdf"}
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("planned %d files, want %d — metadata leaked:\n got: %v\nwant: %v",
+			len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("item %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestWalkDoesNotSkipTheSourceItself: pointing deliberately at a metadata
+// directory must still copy what is inside it.
+func TestWalkDoesNotSkipTheSourceItself(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, ".Trashes")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "recovered.pdf"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Plan(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Dst != "recovered.pdf" {
+		t.Errorf("choosing a metadata dir as source should copy its contents, got %v", planNames(items))
+	}
+}
+
+// TestCopyPreservesModTime: a superdirectory built to archive should not claim
+// every file was written today.
+func TestCopyPreservesModTime(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "old.txt")
+	if err := os.WriteFile(src, []byte("vintage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(1999, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(src, time.Time{}, want); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := Copy(target, items, nil); len(f) != 0 {
+		t.Fatalf("unexpected failures: %v", f)
+	}
+
+	info, err := os.Stat(filepath.Join(target, "old.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// FAT32 stores mtime with two-second granularity, so compare with tolerance
+	// rather than demanding an exact instant.
+	if delta := info.ModTime().Sub(want); delta > 2*time.Second || delta < -2*time.Second {
+		t.Errorf("copy has mtime %v, want %v (delta %v)", info.ModTime().UTC(), want, delta)
 	}
 }
 

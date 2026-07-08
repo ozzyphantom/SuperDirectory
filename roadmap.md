@@ -100,11 +100,28 @@ direction, matching the copy-into-itself guard's existing trade-off.
 Not external-drive specific: the same loss happened copying to the internal disk. The
 question surfaced it.
 
-**Known, unfixed.** Copying *from* a Mac-formatted drive drags along macOS metadata:
-AppleDouble `._` sidecars and `.fseventsd/`, `.Spotlight-V100/`, `.DS_Store`. Flattening a
-drive root produced 86 files, 51 of them junk. And `flatten.Copy` does not preserve
-modification times, so an archival copy to an external drive lands with today's date.
-See Feature ideas.
+**Filesystem metadata, skipped.** Copying *from* a Mac-formatted drive dragged along macOS
+bookkeeping: AppleDouble `._` sidecars plus `.fseventsd/`, `.Spotlight-V100/`, `.DS_Store`.
+Flattening a drive root produced 86 files, 51 of them junk. The new
+[`internal/fsmeta`](./internal/fsmeta) holds one predicate, shared by `flatten.Walk`, the
+exclusion tree, and the wizard's file counts — so the copy, the tree you pick from, and the
+"3 files · 2 dirs" labels all agree about what exists. Had only the copy filtered, the tree
+would have offered to exclude directories that were never going to be copied. The same drive
+root now flattens to 3 files, 0 junk. Dotfiles a user wrote (`.gitignore`, `.env`, `.git/`)
+are content, not metadata, and are still copied; and choosing `.Trashes` as your source
+deliberately still copies what is inside it.
+
+**Modification times, preserved.** `flatten.Copy` now calls `os.Chtimes` after each file, so
+an archival copy no longer lands claiming every file was written today. A failure to set the
+timestamp is deliberately not fatal — the contents are already safely on disk, and failing
+the file would send the user hunting for data that arrived intact. Verified across a
+filesystem boundary in both directions, including onto FAT32 and its two-second granularity.
+
+**Not fixed, cosmetic.** Writing to exFAT produces hidden `._` sidecars on the destination.
+Traced to macOS attaching a `com.apple.provenance` xattr to files created by unsigned
+binaries — a bare `os.WriteFile` triggers it, so it is not the copy logic, and ad-hoc
+code-signing does not clear it. Invisible in Finder. Possibly resolved by Developer ID
+notarization; retest at that point.
 
 ## UX round 2 (2026-07-07) — done
 
@@ -130,8 +147,5 @@ set.
 - A user-editable extension→category table (today it is compiled into `organize.go`).
 - Canonicalize extension aliases (`jpeg`→`jpg`, `tif`→`tiff`, `htm`→`html`) so organize
   mode does not split one file type across two folders.
-- Skip filesystem metadata when walking: AppleDouble `._*` sidecars, `.DS_Store`,
-  `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`, `Thumbs.db`, `$RECYCLE.BIN/`. Matters most
-  when the source is an external drive, where they can outnumber the real files.
-- Preserve modification times (`os.Chtimes` after copy). A superdirectory built for archival
-  currently reports every file as created today.
+- A user-visible toggle for the metadata skip list, for the rare source where `._*` files are
+  the content (a forensic image, an AppleDouble archive).

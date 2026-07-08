@@ -68,6 +68,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 - **Directory browser** — a keyboard-driven picker for source and destination, with type-to-jump
 - **Exclusion system** — selectively skip subdirectories at any depth, with a recursive tree
 - **Directory preview** — inspect directory contents before deciding to include or exclude
+- **External-drive ready** — works on exFAT and FAT32, skips the metadata macOS and Windows leave on a drive, and preserves modification times
 - **Safe by default** — refuses a destination inside the source, so a copy can never eat itself
 
 ## Requirements
@@ -153,6 +154,23 @@ The "keep original folders" layout cannot collide at all: a file's path relative
 
 Classification is by filename, not content: a `.pdf` renamed to `.txt` is sorted as text.
 
+## What gets skipped
+
+Symlinks, sockets, and devices are never copied — real files only.
+
+Filesystem bookkeeping is skipped too, in both modes. This matters most on external drives, where a Mac writes an invisible `._` sidecar next to every file: flattening a drive root can otherwise produce a superdirectory where the metadata outnumbers your files.
+
+| Skipped | Where it comes from |
+|---|---|
+| `._*` (AppleDouble sidecars), `.DS_Store`, `.localized` | macOS, on any volume it touches |
+| `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`, `.DocumentRevisions-V100/` | macOS drive services |
+| `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN/`, `System Volume Information/` | Windows |
+| `.Trash/`, `.Trash-1000/` | Linux |
+
+Dotfiles you wrote are *not* metadata: `.gitignore`, `.env`, and `.git/` are copied normally. And if you deliberately choose a metadata directory as your source — say you point at `.Trashes` to recover something — its contents are copied.
+
+Modification times are preserved, so an archived superdirectory remembers when its files were written rather than claiming they all appeared today. Permissions are preserved where the destination filesystem can store them; exFAT and FAT32 cannot, and will show their mount-wide defaults.
+
 ## Application Structure
 
 ```
@@ -162,6 +180,7 @@ SuperDirectory/
 ├── internal/
 │   ├── flatten/         # Functional core: shared walk, flat planner, the copier
 │   ├── organize/        # Second planner: Category/extension layout
+│   ├── fsmeta/          # Filesystem-bookkeeping predicate (._*, .DS_Store, …)
 │   ├── pick/            # Keyboard directory browser
 │   ├── exclude/         # Recursive exclusion tree (Bubble Tea)
 │   ├── wizard/          # Interactive layer (Charm huh)
@@ -179,6 +198,7 @@ SuperDirectory/
 |---|---|---|
 | `internal/flatten` | Shared tree walk, the flat planner, and the copier | No TUI knowledge. Pure and unit-tested. |
 | `internal/organize` | The second planner: sort into `Category/extension/` | Shares `flatten.Walk`, emits `flatten.Item`, executed by `flatten.Copy`. |
+| `internal/fsmeta` | Which names are filesystem bookkeeping | Shared by the copy, the exclusion tree, and the wizard's counts so all three agree. |
 | `internal/pick` | Keyboard directory browser | Handles source and destination selection. |
 | `internal/exclude` | Recursive exclusion tree on Bubble Tea | Descend to any depth; excluding a directory skips its whole subtree. |
 | `internal/wizard` | Interactive layer on Charm `huh` | Mode → source → destination → exclusions → layout → confirm. Returns a plain `Result`. |

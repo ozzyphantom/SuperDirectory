@@ -15,6 +15,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
 )
 
 // ErrCanceled is returned when the user quits the tree outright (q / Ctrl+C).
@@ -247,7 +249,7 @@ func (m *model) renderPreview(n *node) string {
 	}
 	var files []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() && !fsmeta.IsMetadata(e.Name()) {
 			files = append(files, e.Name())
 		}
 	}
@@ -382,9 +384,11 @@ func (m *model) previewHeight() int {
 	if err != nil {
 		return header
 	}
+	// Must count exactly what renderPreview lists, or the reserved height and the
+	// rendered height disagree and the help line falls off the screen.
 	files := 0
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() && !fsmeta.IsMetadata(e.Name()) {
 			files++
 		}
 	}
@@ -425,6 +429,10 @@ func loadChildren(n *node) {
 		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
+		// Never offer to exclude a directory the copy skips anyway.
+		if fsmeta.IsMetadata(e.Name()) {
+			continue
+		}
 		full := filepath.Join(n.path, e.Name())
 		f, d := countChildren(full)
 		kids = append(kids, &node{
@@ -441,12 +449,17 @@ func loadChildren(n *node) {
 	n.children = kids
 }
 
+// countChildren reports what the copy would actually take from dir, so the
+// "3 files · 2 dirs" label never promises filesystem bookkeeping.
 func countChildren(dir string) (files, dirs int) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, 0
 	}
 	for _, e := range entries {
+		if fsmeta.IsMetadata(e.Name()) {
+			continue
+		}
 		if e.IsDir() {
 			dirs++
 		} else {
