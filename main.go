@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/extract"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 	"github.com/ozzyphantom/SuperDirectory/internal/organize"
@@ -104,6 +105,18 @@ func runOnce() (string, bool) {
 		return res.Target, true
 	}
 
+	if res.FindDuplicates {
+		kept, ok := resolveDuplicates(items)
+		if !ok {
+			return "", false // user cancelled at the duplicates prompt
+		}
+		items = kept
+		if len(items) == 0 {
+			fmt.Println("  " + dim.Render("Nothing left to copy."))
+			return res.Target, true
+		}
+	}
+
 	total := len(items)
 	fmt.Printf("  Copying %s file(s) into %s\n\n", bold.Render(fmt.Sprintf("%d", total)), orange.Render(res.Target))
 
@@ -128,6 +141,72 @@ func runOnce() (string, bool) {
 		humanDuration(last.Elapsed),
 		bold.Render(humanRate(last.Rate())))
 	return res.Target, true
+}
+
+// resolveDuplicates scans the plan for byte-identical files and, if any are found,
+// asks whether to skip them. It returns the plan to copy, and false if the user
+// cancelled outright.
+func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
+	fmt.Printf("  %s\n", dim.Render("Looking for duplicate files…"))
+
+	var lastDraw time.Time
+	res := dedup.Find(items, dedup.Options{
+		// The scan reads files. On the drive that motivated this, one of them may
+		// never read at all; the scan must not hang where the copy no longer does.
+		StallTimeout: flatten.DefaultStallTimeout,
+		OnProgress: func(p dedup.Progress) {
+			if p.Total == 0 {
+				return
+			}
+			if now := time.Now(); now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
+				return
+			} else {
+				lastDraw = now
+			}
+			fmt.Printf("\r  %s\033[K", dim.Render(fmt.Sprintf(
+				"hashing %d/%d candidates  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))))
+		},
+	})
+	fmt.Print("\r\033[K")
+
+	if len(res.Unreadable) > 0 {
+		fmt.Printf("  %s %d file(s) could not be read and are treated as unique.\n",
+			orange.Render("!"), len(res.Unreadable))
+	}
+	if res.Files == 0 {
+		fmt.Printf("  %s\n\n", dim.Render(fmt.Sprintf(
+			"No duplicates found (%d file(s) read).", res.Hashed)))
+		return items, true
+	}
+
+	var choice string
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
+				res.Files, humanBytes(res.Bytes), len(res.Sets))).
+			Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
+			Options(
+				huh.NewOption("Skip duplicates — copy one of each set", "skip"),
+				huh.NewOption("Copy everything", "all"),
+				huh.NewOption("Cancel", "cancel"),
+			).
+			Value(&choice),
+	)).WithTheme(wizard.Theme())
+	if err := form.Run(); err != nil {
+		return nil, false // ctrl+c
+	}
+
+	switch choice {
+	case "skip":
+		out := dedup.Filter(items, res)
+		fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf(
+			"Skipping %d duplicate(s), saving %s.", res.Files, humanBytes(res.Bytes))))
+		return out, true
+	case "all":
+		return items, true
+	default:
+		return nil, false
+	}
 }
 
 // postCompletion shows the after-copy menu. Open/reveal loop back to the menu;

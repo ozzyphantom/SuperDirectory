@@ -70,6 +70,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 - **Directory preview** — inspect directory contents before deciding to include or exclude
 - **External-drive ready** — works on exFAT and FAT32, skips the metadata macOS and Windows leave on a drive, and preserves modification times
 - **Live throughput** — the progress bar reports MB/s, bytes copied, the file in flight, and an estimated time remaining, so a slow drive is visibly a slow drive
+- **Duplicate detection** — optionally find byte-identical files and copy one of each instead of all of them
 - **Survives a bad file** — a file that stops delivering data is abandoned after 60s, recorded, and the copy carries on
 - **Safe by default** — refuses a destination inside the source, so a copy can never eat itself
 
@@ -110,14 +111,15 @@ There is one other command, useful for a quick look at what the content extracto
 go run . inspect <dir>   # non-interactive: pure-Go content inspection
 ```
 
-The wizard walks you through six steps. Two of them are skipped when they don't apply.
+The wizard walks you through seven steps. Two of them are skipped when they don't apply.
 
 1. **Mode** — flatten into one folder, or organize by file type
 2. **Source** — browse to the directory to copy from
 3. **Destination** — browse to where the superdirectory goes, and name it
 4. **Exclusion** — optionally skip subdirectories (skipped when the source has none)
 5. **Layout** — keep the original folders inside each type folder? (organize mode only)
-6. **Confirmation** — review, go back, or copy
+6. **Duplicates** — scan for byte-identical files before copying?
+7. **Confirmation** — review, go back, or copy
 
 ### Keyboard Controls
 
@@ -173,6 +175,28 @@ Dotfiles you wrote are *not* metadata: `.gitignore`, `.env`, and `.git/` are cop
 
 Modification times are preserved, so an archived superdirectory remembers when its files were written rather than claiming they all appeared today. Permissions are preserved where the destination filesystem can store them; exFAT and FAT32 cannot, and will show their mount-wide defaults.
 
+## Duplicate detection
+
+Optional, and off by default, because it reads files. Answer yes at the duplicates step and SuperDirectory finds files whose contents are **byte-for-byte identical**, whatever they are named, and offers to copy one of each set.
+
+Identity is decided in three stages, so most files are never opened:
+
+1. **Size.** Files of different sizes cannot be identical. Most photographs have a unique byte size — those are settled with one `stat` each.
+2. **A 64 KiB partial hash**, for files that share a size. Two different photographs of the same size almost always differ in their first block.
+3. **A full hash**, only for the few whose leading block also matched.
+
+On a folder of eleven thousand photographs this typically reads a few hundred.
+
+```
+  Found 312 duplicate file(s), 2.1 GB, across 147 set(s)
+
+  > Skip duplicates — copy one of each set
+    Copy everything
+    Cancel
+```
+
+Two behaviors worth knowing. The survivor of each set is the **first in walk order**, which is lexical — so if you have `Trip/beach.jpg` and `Backup/beach copy.jpg`, the one kept is `Backup/beach copy.jpg`. There is no way to know which is the original. And a file that cannot be read is never called a duplicate; it is reported and copied.
+
 ## When a file will not read
 
 A copy no longer hangs on one bad file. If a file delivers no data for 60 seconds it is abandoned, its partial destination is deleted, it is recorded in the failures list, and the copy carries on.
@@ -193,6 +217,7 @@ SuperDirectory/
 │   ├── flatten/         # Functional core: shared walk, flat planner, the copier
 │   ├── organize/        # Second planner: Category/extension layout
 │   ├── fsmeta/          # Filesystem-bookkeeping predicate (._*, .DS_Store, …)
+│   ├── dedup/           # Content-identical file detection
 │   ├── pick/            # Keyboard directory browser
 │   ├── exclude/         # Recursive exclusion tree (Bubble Tea)
 │   ├── wizard/          # Interactive layer (Charm huh)
@@ -211,6 +236,7 @@ SuperDirectory/
 | `internal/flatten` | Shared tree walk, the flat planner, and the copier | No TUI knowledge. Pure and unit-tested. |
 | `internal/organize` | The second planner: sort into `Category/extension/` | Shares `flatten.Walk`, emits `flatten.Item`, executed by `flatten.Copy`. |
 | `internal/fsmeta` | Which names are filesystem bookkeeping | Shared by the copy, the exclusion tree, and the wizard's counts so all three agree. |
+| `internal/dedup` | Finds byte-identical files in a plan | Size gate, then a 64 KiB partial hash, then a full hash. Most files are never opened. |
 | `internal/pick` | Keyboard directory browser | Handles source and destination selection. |
 | `internal/exclude` | Recursive exclusion tree on Bubble Tea | Descend to any depth; excluding a directory skips its whole subtree. |
 | `internal/wizard` | Interactive layer on Charm `huh` | Mode → source → destination → exclusions → layout → confirm. Returns a plain `Result`. |

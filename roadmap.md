@@ -251,6 +251,30 @@ and watch it progress. That trade is recorded in `Options.StallTimeout`.
 Partial destinations are now removed on any failure. A silently truncated photo sitting in the
 output is worse than a missing one that is named in the failures.
 
+## Duplicate detection (2026-07-08) — done
+
+An opt-in wizard step. [`internal/dedup`](./internal/dedup) finds files whose contents are
+byte-for-byte identical — never by name, since `DSC_0042.NEF` and `DSC_0042 copy.NEF` are the
+same photograph and two different photographs may share a name across folders — and offers to
+copy one of each set.
+
+Content means reading, which on an external drive is the expensive thing, so the work is gated
+in three stages: **size** (files of different sizes cannot be identical, and most photographs
+have a unique size, so most are settled with one `stat`), then a **64 KiB partial hash** for
+files sharing a size, then a **full hash** only for those whose leading block also matched. On
+a nine-file fixture with three identical photos, one same-size decoy, and five uniques, only
+seven reads happened and the five uniques were never opened.
+
+The survivor of each set is the earliest in plan order. That is deliberate: the planner gave
+the first occurrence the unsuffixed name, so keeping it leaves `beach.jpg` behind rather than
+`beach_1.jpg`. It also means the survivor may be the file *named* like a copy — there is no
+way to know which is the original, and guessing from the filename would be a heuristic
+pretending to be knowledge.
+
+The scanner carries the same stall guard as the copier. The drive that motivated the duplicate
+finder also had an unreadable file on it; a scan that hangs is no better than a copy that
+hangs. An unreadable file is reported, treated as unique, and copied.
+
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser

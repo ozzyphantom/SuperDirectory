@@ -47,6 +47,10 @@ type Result struct {
 	// KeepSourceTree applies to ModeOrganize only: recreate each file's
 	// original folder nesting inside its extension folder.
 	KeepSourceTree bool
+
+	// FindDuplicates asks the copier's caller to look for byte-identical files in
+	// the source before copying, and offer to skip the copies.
+	FindDuplicates bool
 }
 
 // errBack is an internal sentinel: a step is asking to return to the previous
@@ -69,6 +73,7 @@ func Run() (*Result, error) {
 		hasSubs        bool
 		subCount       int
 		keepSourceTree bool
+		findDuplicates bool
 	)
 
 	const (
@@ -77,6 +82,7 @@ func Run() (*Result, error) {
 		stepDest
 		stepExclude
 		stepLayout
+		stepDuplicates
 		stepConfirm
 	)
 
@@ -150,7 +156,7 @@ func Run() (*Result, error) {
 
 		case stepLayout:
 			if mode != ModeOrganize {
-				step = stepConfirm
+				step = stepDuplicates
 				continue
 			}
 			keep, err := askLayout(keepSourceTree)
@@ -162,10 +168,26 @@ func Run() (*Result, error) {
 				return nil, err
 			}
 			keepSourceTree = keep
+			step = stepDuplicates
+
+		case stepDuplicates:
+			find, err := askDuplicates(findDuplicates)
+			if errors.Is(err, errBack) {
+				if mode == ModeOrganize {
+					step = stepLayout
+				} else {
+					step = prevBeforeLayout()
+				}
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			findDuplicates = find
 			step = stepConfirm
 
 		case stepConfirm:
-			dec, err := confirm(mode, source, target, excluded, keepSourceTree)
+			dec, err := confirm(mode, source, target, excluded, keepSourceTree, findDuplicates)
 			if err != nil {
 				return nil, err
 			}
@@ -177,13 +199,10 @@ func Run() (*Result, error) {
 					Excluded:       excluded,
 					Mode:           mode,
 					KeepSourceTree: mode == ModeOrganize && keepSourceTree,
+					FindDuplicates: findDuplicates,
 				}, nil
 			case decBack:
-				if mode == ModeOrganize {
-					step = stepLayout
-				} else {
-					step = prevBeforeLayout()
-				}
+				step = stepDuplicates
 			case decCancel:
 				return nil, huh.ErrUserAborted
 			}
@@ -352,7 +371,7 @@ const (
 	decCancel
 )
 
-func confirm(mode Mode, source, target string, excluded map[string]bool, keepSourceTree bool) (decision, error) {
+func confirm(mode Mode, source, target string, excluded map[string]bool, keepSourceTree, findDuplicates bool) (decision, error) {
 	summary := fmt.Sprintf("From:  %s\nTo:    %s\n", source, target)
 	if mode == ModeOrganize {
 		summary += "Mode:  organize by file type\n"
@@ -369,6 +388,9 @@ func confirm(mode Mode, source, target string, excluded map[string]bool, keepSou
 		summary += "Excluding: 1 directory"
 	default:
 		summary += fmt.Sprintf("Excluding: %d directories", n)
+	}
+	if findDuplicates {
+		summary += "\nDuplicates: scan before copying"
 	}
 
 	var choice string
@@ -507,4 +529,36 @@ func within(child, parent string) bool {
 	}
 	// rel escapes parent only if it is "..", or starts with "../".
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// askDuplicates offers the content-identity scan. It is opt-in because it costs
+// reads: files sharing a byte size have to be hashed, and on an external drive that
+// is the expensive thing. Files with a unique size are never opened.
+func askDuplicates(current bool) (bool, error) {
+	choice := "no"
+	if current {
+		choice = "yes"
+	}
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Look for duplicate files first?").
+			Description("Finds files with identical contents, whatever they are named,\nand offers to copy one of each instead of all of them.\nOnly files sharing a byte size are read.").
+			Options(
+				huh.NewOption("No — copy everything", "no"),
+				huh.NewOption("Yes — find identical files", "yes"),
+				huh.NewOption("Go back", "back"),
+			).
+			Value(&choice),
+	)).WithTheme(Theme())
+	if err := form.Run(); err != nil {
+		return current, huh.ErrUserAborted // ctrl+c
+	}
+	switch choice {
+	case "back":
+		return current, errBack
+	case "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
