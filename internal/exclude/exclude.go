@@ -49,10 +49,11 @@ type node struct {
 	fileCount   int
 	subdirCount int
 
-	// counted guards the three fields above. Establishing them costs a directory
-	// read, so it is deferred until the row is about to be drawn or the user tries
-	// to open it — see ensureCounted.
-	counted bool
+	// counted guards the three fields above; counting means a background worker is
+	// already fetching them. Establishing them costs a full directory read, so it
+	// happens off the render path — see countVisibleCmd.
+	counted  bool
+	counting bool
 
 	// previewFiles memoizes the node's file listing for the preview pane.
 	// previewHeight and renderPreview both need it on every frame; reading the
@@ -62,17 +63,58 @@ type node struct {
 	previewLoaded bool
 }
 
-// ensureCounted fills a node's file/subdirectory counts, reading its directory at
-// most once. Expanding a folder with 120 children used to read all 120 up front to
-// label them; now each is read only when its row reaches the screen, so the cost is
-// bounded by the terminal height instead of the directory size.
-func ensureCounted(n *node) {
-	if n.counted {
-		return
+// countsMsg carries background count results back to the update loop. Nodes are
+// stable objects, so a result is always safe to apply, even if the row has since
+// scrolled off screen.
+type countsMsg struct{ results []nodeCount }
+
+type nodeCount struct {
+	node        *node
+	files, dirs int
+}
+
+// countVisibleCmd counts the on-screen rows whose numbers are still unknown,
+// in the background.
+//
+// Counting a node means reading its whole directory: a folder holding 800 files
+// and one subfolder costs 801 entries to learn "1 dir". Doing that inside View,
+// for every visible row, made the tree stall on an external drive — and stall
+// worse the deeper you went, because deeper folders hold more files.
+//
+// Each node is dispatched at most once, so scrolling cannot pile up duplicate
+// work. The worker only reads n.path, which never changes; every write to a node
+// happens back on the update loop in applyCounts.
+func (m *model) countVisibleCmd() tea.Cmd {
+	rows := m.listRows()
+	end := min(m.offset+rows, len(m.visible))
+
+	var todo []*node
+	for i := m.offset; i < end; i++ {
+		n := m.visible[i]
+		if !n.counted && !n.counting {
+			n.counting = true
+			todo = append(todo, n)
+		}
 	}
-	n.counted = true
-	f, d := countChildren(n.path)
-	n.fileCount, n.subdirCount, n.hasSubdirs = f, d, d > 0
+	if len(todo) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		results := make([]nodeCount, 0, len(todo))
+		for _, n := range todo {
+			f, d := countChildren(n.path)
+			results = append(results, nodeCount{node: n, files: f, dirs: d})
+		}
+		return countsMsg{results: results}
+	}
+}
+
+func (m *model) applyCounts(msg countsMsg) {
+	for _, r := range msg.results {
+		r.node.counted = true
+		r.node.counting = false
+		r.node.fileCount, r.node.subdirCount, r.node.hasSubdirs = r.files, r.dirs, r.dirs > 0
+	}
 }
 
 // previewFilesOf returns the node's copyable files, reading the directory at most
@@ -147,10 +189,14 @@ func newModel(source string, preselected map[string]bool) *model {
 	return m
 }
 
-func (m *model) Init() tea.Cmd { return nil }
+// Init kicks off the first background count, for the rows visible on open.
+func (m *model) Init() tea.Cmd { return m.countVisibleCmd() }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case countsMsg:
+		m.applyCounts(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.height = msg.Height - 8
 		if m.height < 3 {
@@ -193,7 +239,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.clampScroll()
-	return m, nil
+	// Scrolling, expanding, or resizing may have exposed uncounted rows.
+	return m, m.countVisibleCmd()
 }
 
 func (m *model) View() string {
@@ -211,7 +258,6 @@ func (m *model) View() string {
 		end = len(m.visible)
 	}
 	for i := m.offset; i < end; i++ {
-		ensureCounted(m.visible[i]) // only the rows actually on screen
 		b.WriteString(m.renderNode(m.visible[i], i == m.cursor))
 	}
 	if len(m.visible) > rows {
@@ -260,9 +306,11 @@ func (m *model) statusLine() string {
 
 func (m *model) renderNode(n *node, focused bool) string {
 	// Expandable directories get a colored arrow; a directory with no
-	// subdirectories gets a dim leaf dot (nothing to expand into).
+	// subdirectories gets a dim leaf dot (nothing to expand into). Until the count
+	// lands we assume expandable: an arrow that turns out to be a leaf costs one
+	// harmless keypress, whereas a leaf dot on a real folder hides it.
 	marker := dimStyle.Render("·") + " "
-	if n.hasSubdirs {
+	if n.hasSubdirs || !n.counted {
 		if n.expanded {
 			marker = arrowStyle.Render("▾") + " "
 		} else {
@@ -274,7 +322,12 @@ func (m *model) renderNode(n *node, focused bool) string {
 	if m.effectivelyExcluded(n) {
 		name = excludedStyle.Render("✗ " + n.name)
 	}
-	count := dimStyle.Render(fmt.Sprintf("  (%d files, %d dirs)", n.fileCount, n.subdirCount))
+	// The label is omitted rather than showing "(0 files, 0 dirs)" for a folder
+	// whose count has not arrived — a zero would be a lie, not a placeholder.
+	count := ""
+	if n.counted {
+		count = dimStyle.Render(fmt.Sprintf("  (%d files, %d dirs)", n.fileCount, n.subdirCount))
+	}
 
 	pointer := "  "
 	if focused {
@@ -330,11 +383,13 @@ func (m *model) expandCurrent() {
 		return
 	}
 	n := m.visible[m.cursor]
-	ensureCounted(n) // hasSubdirs is meaningless until this runs
-	if !n.hasSubdirs {
+	// loadChildren reads n.path once and reveals whether there is anything to
+	// expand into, so there is no need to establish hasSubdirs first — that would
+	// have been a second read of the same directory.
+	loadChildren(n)
+	if len(n.children) == 0 {
 		return
 	}
-	loadChildren(n)
 	n.expanded = true
 	m.rebuild()
 }
@@ -462,8 +517,8 @@ func loadChildren(n *node) {
 			continue
 		}
 		// Counts are left unset here on purpose: filling them would read every
-		// child directory, one bus round trip each on an external drive, before a
-		// single row is drawn. ensureCounted fills them as rows reach the screen.
+		// child directory in full before a single row is drawn. countVisibleCmd
+		// fetches them in the background, for on-screen rows only.
 		kids = append(kids, &node{
 			path:   filepath.Join(n.path, e.Name()),
 			name:   e.Name(),

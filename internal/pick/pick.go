@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,14 +96,14 @@ func Run(opts Options) (string, error) {
 	}
 }
 
-// subdirsUnknown marks an entry whose subfolder count has not been looked up
-// yet. Counting costs a directory read, which is free locally and expensive over
-// USB, so it is deferred until the row is about to be drawn.
+// subdirsUnknown marks an entry whose subfolder count has not arrived yet. It
+// renders as no hint at all — never as zero, which would wrongly claim the folder
+// is a leaf.
 const subdirsUnknown = -1
 
 type entry struct {
 	name    string
-	subdirs int // subdirsUnknown until counted; see fillVisibleCounts
+	subdirs int // subdirsUnknown until a background count lands; see countVisibleCmd
 }
 
 type model struct {
@@ -116,8 +117,15 @@ type model struct {
 
 	// counts memoizes subfolder counts by absolute path, so re-entering a
 	// directory — or scrolling back over a row — costs nothing. The browser is
-	// read-only and short-lived, so entries are never invalidated.
+	// read-only and short-lived, so entries are never invalidated. Only the
+	// Bubble Tea update loop touches this map.
 	counts map[string]int
+
+	// gen increments on every navigation. A background count carries the
+	// generation it was started for; if the user has moved on, the worker stops
+	// mid-flight and its result is discarded. Without this, hopping quickly
+	// through ten directories would leave ten workers competing for the disk.
+	gen atomic.Int64
 
 	// name-entry sub-mode
 	naming bool
@@ -129,7 +137,8 @@ type model struct {
 	canceled bool
 }
 
-func (m *model) Init() tea.Cmd { return nil }
+// Init kicks off the first background count, for the directory Run opened on.
+func (m *model) Init() tea.Cmd { return m.countVisibleCmd() }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -138,6 +147,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.height < 3 {
 			m.height = 3
 		}
+		// A taller window reveals rows that were never counted.
+		m.clampScroll()
+		return m, m.countVisibleCmd()
+	case countsMsg:
+		m.applyCounts(msg)
+		return m, nil
 	case tea.KeyMsg:
 		if m.naming {
 			return m.updateNaming(msg)
@@ -190,7 +205,8 @@ func (m *model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.clampScroll()
-	return m, nil
+	// Scrolling, jumping, or descending may have exposed uncounted rows.
+	return m, m.countVisibleCmd()
 }
 
 // updateNaming handles keys while typing a new folder name.
@@ -350,7 +366,10 @@ func (m *model) ascend() {
 }
 
 // enter switches to dir and reloads the listing from the top.
+// enter moves to dir and invalidates any background count still running for the
+// directory we are leaving.
 func (m *model) enter(dir string) {
+	m.gen.Add(1)
 	m.dir = dir
 	m.cursor = 0
 	m.offset = 0
@@ -372,13 +391,14 @@ func (m *model) jump(r rune) {
 	}
 }
 
-// load reads the current directory — and nothing else. It deliberately does NOT
-// count each child's subfolders: that used to cost one directory read per child,
-// so entering a folder with 120 subfolders issued 121 reads. Locally that is
-// microseconds; on a USB drive each read is a bus round trip (and a seek, on a
-// spinning disk), which made navigation crawl. Counts are filled in for the rows
-// actually on screen, by fillVisibleCounts.
+// load reads the current directory — one directory read, and nothing else. It
+// does not touch any child, so the cost of a hop does not depend on how many
+// files the folders inside it happen to hold. Subfolder counts arrive later, from
+// countVisibleCmd, off the critical path.
 func (m *model) load() {
+	if m.counts == nil {
+		m.counts = map[string]int{}
+	}
 	entries, err := os.ReadDir(m.dir)
 	m.loadErr = err
 	if err != nil {
@@ -396,30 +416,77 @@ func (m *model) load() {
 		return strings.ToLower(items[i].name) < strings.ToLower(items[j].name)
 	})
 	m.items = items
-	m.clampScroll() // also fills counts for the first visible window
+	m.clampScroll() // resolves anything already memoized; no disk access
 }
 
-// fillVisibleCounts looks up the subfolder count for each row currently in the
-// viewport, memoizing the result. The work is bounded by the terminal height
-// rather than by directory size, so a folder with 10,000 children costs the same
-// as one with 10. Scrolling pays for newly revealed rows once.
-func (m *model) fillVisibleCounts() {
-	if m.counts == nil {
-		m.counts = map[string]int{}
-	}
-	end := min(m.offset+m.height, len(m.items))
-	for i := m.offset; i < end; i++ {
+// countsMsg carries the result of a background count back to the update loop.
+type countsMsg struct {
+	dir    string         // the directory the counts were taken in
+	gen    int64          // the navigation generation they were started for
+	counts map[string]int // child name -> its subfolder count
+}
+
+// fillFromCache resolves whatever the memo already knows. Pure: no disk access,
+// so it is safe to call on every keystroke.
+func (m *model) fillFromCache() {
+	for i := range m.items {
 		if m.items[i].subdirs != subdirsUnknown {
 			continue
 		}
-		path := filepath.Join(m.dir, m.items[i].name)
-		n, ok := m.counts[path]
-		if !ok {
-			n = countSubdirs(path)
-			m.counts[path] = n
+		if n, ok := m.counts[filepath.Join(m.dir, m.items[i].name)]; ok {
+			m.items[i].subdirs = n
 		}
-		m.items[i].subdirs = n
 	}
+}
+
+// countVisibleCmd counts the on-screen rows that are still unknown, in the
+// background.
+//
+// Counting a child means reading its whole directory: a folder holding 800 files
+// and one subfolder costs 801 entries to learn the number "1". Doing that for
+// fifteen rows before the first frame is what made an external drive feel slower
+// the deeper you went — deeper folders hold more files. So navigation now costs
+// exactly one directory read (the one you entered), and the subfolder hints arrive
+// a moment later.
+//
+// Returns nil when there is nothing to do, which Bubble Tea treats as a no-op.
+func (m *model) countVisibleCmd() tea.Cmd {
+	end := min(m.offset+m.height, len(m.items))
+	var names []string
+	for i := m.offset; i < end; i++ {
+		if m.items[i].subdirs == subdirsUnknown {
+			names = append(names, m.items[i].name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+
+	dir, gen := m.dir, m.gen.Load()
+	return func() tea.Msg {
+		out := make(map[string]int, len(names))
+		for _, name := range names {
+			// Cheap to check, and it stops a stale worker from reading the rest
+			// of a slow directory nobody is looking at any more.
+			if m.gen.Load() != gen {
+				return nil
+			}
+			out[name] = countSubdirs(filepath.Join(dir, name))
+		}
+		return countsMsg{dir: dir, gen: gen, counts: out}
+	}
+}
+
+// applyCounts folds a background result into the memo, ignoring it if the user
+// has navigated since it was started.
+func (m *model) applyCounts(msg countsMsg) {
+	if msg.gen != m.gen.Load() || msg.dir != m.dir {
+		return
+	}
+	for name, n := range msg.counts {
+		m.counts[filepath.Join(msg.dir, name)] = n
+	}
+	m.fillFromCache()
 }
 
 func (m *model) clampScroll() {
@@ -438,10 +505,9 @@ func (m *model) clampScroll() {
 	if m.offset < 0 {
 		m.offset = 0
 	}
-	// The viewport is now settled, so this is the moment we know which rows need
-	// a subfolder count. Every path that moves the cursor or resizes the window
-	// funnels through here.
-	m.fillVisibleCounts()
+	// Resolve anything already memoized. This touches no disk; rows still unknown
+	// are picked up by countVisibleCmd, which runs in the background.
+	m.fillFromCache()
 }
 
 // countSubdirs reports how many immediate subdirectories dir has, so the

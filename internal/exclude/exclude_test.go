@@ -126,41 +126,6 @@ func countedNodes(nodes []*node) int {
 	return n
 }
 
-// TestLoadChildrenDefersCounts: expanding a wide folder must not read every child
-// directory up front. On an external drive that was one bus round trip per child
-// before a single row appeared.
-func TestLoadChildrenDefersCounts(t *testing.T) {
-	const total = 80
-	root := &node{path: buildWide(t, total), depth: -1, expanded: true}
-	loadChildren(root)
-
-	if len(root.children) != total {
-		t.Fatalf("expected %d children, got %d", total, len(root.children))
-	}
-	if got := countedNodes(root.children); got != 0 {
-		t.Errorf("loadChildren counted %d children eagerly, want 0", got)
-	}
-}
-
-// TestEnsureCountedIsIdempotent: the count is established once and reused.
-func TestEnsureCountedIsIdempotent(t *testing.T) {
-	root := &node{path: buildWide(t, 1), depth: -1, expanded: true}
-	loadChildren(root)
-	n := root.children[0]
-
-	ensureCounted(n)
-	if !n.counted || n.fileCount != 1 || n.subdirCount != 1 || !n.hasSubdirs {
-		t.Fatalf("first count wrong: counted=%v files=%d dirs=%d hasSubdirs=%v",
-			n.counted, n.fileCount, n.subdirCount, n.hasSubdirs)
-	}
-	// Poison the cached values; a second call must not re-read and overwrite them.
-	n.fileCount = 99
-	ensureCounted(n)
-	if n.fileCount != 99 {
-		t.Error("ensureCounted re-read a directory it had already counted")
-	}
-}
-
 // TestPreviewFilesReadOnce: previewHeight and renderPreview both need the listing
 // on every frame. Reading twice per keystroke is imperceptible locally and painful
 // over USB.
@@ -192,5 +157,107 @@ func TestPreviewHeightMatchesRender(t *testing.T) {
 	got := strings.Count(m.renderPreview(n), "\n")
 	if got != want {
 		t.Errorf("previewHeight reserved %d lines, renderPreview drew %d", want, got)
+	}
+}
+
+// TestLoadChildrenTouchesNoGrandchildren: expanding a node must read that node's
+// directory and nothing beneath it. Counting a child means reading the child in
+// full, and on an external drive with file-heavy folders that is what stalls the
+// tree — worse the deeper you go.
+func TestLoadChildrenTouchesNoGrandchildren(t *testing.T) {
+	const total = 40
+	root := &node{path: buildWide(t, total), depth: -1, expanded: true}
+	loadChildren(root)
+
+	if len(root.children) != total {
+		t.Fatalf("expected %d children, got %d", total, len(root.children))
+	}
+	for _, c := range root.children {
+		if c.counted || c.counting {
+			t.Fatalf("loadChildren counted %q eagerly", c.name)
+		}
+	}
+}
+
+// TestBackgroundCountFillsVisibleRows: the command counts the visible window, once
+// per node, and its message populates the tree.
+func TestBackgroundCountFillsVisibleRows(t *testing.T) {
+	root := &node{path: buildWide(t, 40), depth: -1, expanded: true}
+	loadChildren(root)
+	m := &model{root: root, source: root.path, height: 6, excluded: map[string]bool{}}
+	m.rebuild()
+
+	rows := m.listRows()
+	cmd := m.countVisibleCmd()
+	if cmd == nil {
+		t.Fatal("expected a background count command")
+	}
+	msg, ok := cmd().(countsMsg)
+	if !ok {
+		t.Fatal("command did not produce a countsMsg")
+	}
+	if len(msg.results) != rows {
+		t.Errorf("counted %d nodes, want the %d visible rows", len(msg.results), rows)
+	}
+
+	// A second dispatch before the first lands must not re-queue the same nodes.
+	if m.countVisibleCmd() != nil {
+		t.Error("in-flight nodes were dispatched twice")
+	}
+
+	m.applyCounts(msg)
+	n := m.visible[0]
+	if !n.counted || n.counting || n.fileCount != 1 || n.subdirCount != 1 || !n.hasSubdirs {
+		t.Errorf("apply wrong: counted=%v counting=%v files=%d dirs=%d hasSubdirs=%v",
+			n.counted, n.counting, n.fileCount, n.subdirCount, n.hasSubdirs)
+	}
+	// Rows below the fold stay unknown.
+	if last := m.visible[len(m.visible)-1]; last.counted {
+		t.Error("offscreen row was counted")
+	}
+	if m.countVisibleCmd() != nil {
+		t.Error("expected no work once every visible row is counted")
+	}
+}
+
+// TestExpandNeedsNoPriorCount: expanding used to establish hasSubdirs first, which
+// read the directory, and then loadChildren read the very same directory again.
+func TestExpandNeedsNoPriorCount(t *testing.T) {
+	root := &node{path: buildWide(t, 3), depth: -1, expanded: true}
+	loadChildren(root)
+	m := &model{root: root, source: root.path, height: 15, excluded: map[string]bool{}}
+	m.rebuild()
+
+	n := m.visible[0]
+	if n.counted {
+		t.Fatal("precondition: node should be uncounted")
+	}
+	m.expandCurrent() // cursor is on n
+	if !n.expanded {
+		t.Error("expandCurrent refused to open an uncounted folder that has children")
+	}
+	if len(n.children) != 1 || n.children[0].name != "archive" {
+		t.Errorf("children wrong: %v", n.children)
+	}
+}
+
+// TestExpandLeafDoesNothing: a folder with no subdirectories must not expand.
+func TestExpandLeafDoesNothing(t *testing.T) {
+	dir := t.TempDir()
+	leaf := filepath.Join(dir, "leaf")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "only-a-file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := &node{path: dir, depth: -1, expanded: true}
+	loadChildren(root)
+	m := &model{root: root, source: dir, height: 15, excluded: map[string]bool{}}
+	m.rebuild()
+
+	m.expandCurrent()
+	if m.visible[0].expanded {
+		t.Error("a leaf directory should not expand")
 	}
 }

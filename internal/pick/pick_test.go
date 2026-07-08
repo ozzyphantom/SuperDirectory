@@ -230,14 +230,15 @@ func counted(m *model) int {
 	return n
 }
 
-// TestLoadCountsOnlyVisibleRows is a performance regression test with teeth.
-// load() used to read every child directory to label it "(N subfolders)": entering
-// a folder with 120 children issued 121 directory reads. Locally that is
-// microseconds; over USB each read is a bus round trip, and navigation crawled.
+// TestLoadTouchesNoChildDirectories is the performance regression test that
+// matters on an external drive.
 //
-// Work must now be bounded by the terminal height, not the directory size.
-func TestLoadCountsOnlyVisibleRows(t *testing.T) {
-	const total, height = 120, 15
+// Counting a child's subfolders means reading that child's whole directory. A
+// folder holding 800 files and one subfolder costs 801 entries to learn the number
+// "1". load() must therefore touch no child at all: the cost of a hop must depend
+// on the directory you entered, never on how many files the folders inside it hold.
+func TestLoadTouchesNoChildDirectories(t *testing.T) {
+	const total, height = 40, 15
 	root := buildWideTree(t, total)
 
 	m := &model{dir: root, height: height}
@@ -246,50 +247,109 @@ func TestLoadCountsOnlyVisibleRows(t *testing.T) {
 	if len(m.items) != total {
 		t.Fatalf("expected %d entries, got %d", total, len(m.items))
 	}
-	if got := counted(m); got != height {
-		t.Errorf("counted %d rows after load, want exactly the %d visible ones "+
-			"— a directory read per child is what made USB drives crawl", got, height)
+	if got := counted(m); got != 0 {
+		t.Errorf("load() counted %d rows synchronously, want 0 — every count is a "+
+			"full child-directory read, and that is what made deep hops slow", got)
 	}
-	// Rows below the fold must still be unknown, not silently zero: a zero would
-	// render as "no subfolders" for a folder that has them.
-	if m.items[total-1].subdirs != subdirsUnknown {
-		t.Errorf("offscreen row was counted eagerly: %d", m.items[total-1].subdirs)
-	}
-	// The visible ones must carry the real count, not a placeholder.
-	if m.items[0].subdirs != 1 {
-		t.Errorf("visible row should report its 1 subfolder, got %d", m.items[0].subdirs)
+	// Unknown must not render as "0 subfolders": that would call a folder a leaf.
+	if m.items[0].subdirs != subdirsUnknown {
+		t.Errorf("uncounted row should be subdirsUnknown, got %d", m.items[0].subdirs)
 	}
 }
 
-// TestScrollingFillsAndMemoizes: revealed rows get counted once, and re-visiting
-// a directory costs nothing.
-func TestScrollingFillsAndMemoizes(t *testing.T) {
-	const total, height = 60, 10
+// TestBackgroundCountFillsVisibleRows: the command counts exactly the visible
+// window, and its message populates the model.
+func TestBackgroundCountFillsVisibleRows(t *testing.T) {
+	const total, height = 40, 10
 	root := buildWideTree(t, total)
 
 	m := &model{dir: root, height: height}
 	m.load()
-	if got := counted(m); got != height {
-		t.Fatalf("after load: counted %d, want %d", got, height)
+
+	cmd := m.countVisibleCmd()
+	if cmd == nil {
+		t.Fatal("expected a background count command")
+	}
+	msg, ok := cmd().(countsMsg)
+	if !ok {
+		t.Fatal("command did not produce a countsMsg")
+	}
+	if len(msg.counts) != height {
+		t.Errorf("counted %d children, want the %d visible ones", len(msg.counts), height)
 	}
 
-	// Scroll to the bottom; newly revealed rows fill in.
-	m.cursor = total - 1
-	m.clampScroll()
-	if m.items[total-1].subdirs != 1 {
-		t.Errorf("row scrolled into view was not counted")
+	m.applyCounts(msg)
+	if got := counted(m); got != height {
+		t.Errorf("after applying, %d rows counted, want %d", got, height)
+	}
+	if m.items[0].subdirs != 1 {
+		t.Errorf("visible row should report its 1 subfolder, got %d", m.items[0].subdirs)
+	}
+	if m.items[total-1].subdirs != subdirsUnknown {
+		t.Errorf("offscreen row should still be unknown, got %d", m.items[total-1].subdirs)
 	}
 
-	// Every path we ever counted is memoized, so re-entering is free.
-	if len(m.counts) == 0 {
-		t.Fatal("expected the count cache to be populated")
+	// Nothing left to do for this window.
+	if m.countVisibleCmd() != nil {
+		t.Error("expected no command when every visible row is counted")
 	}
-	before := len(m.counts)
-	m.load() // re-enter the same directory
-	if got := counted(m); got != height {
-		t.Errorf("re-entry counted %d rows, want %d", got, height)
+}
+
+// TestStaleCountsAreDiscarded: a count that finishes after the user has navigated
+// away must not paint another directory's numbers onto the current listing.
+func TestStaleCountsAreDiscarded(t *testing.T) {
+	root := buildWideTree(t, 5)
+	m := &model{dir: root, height: 15}
+	m.load()
+
+	stale := countsMsg{dir: root, gen: m.gen.Load(), counts: map[string]int{"dir-000": 42}}
+
+	// The user hops elsewhere before the worker lands.
+	m.enter(filepath.Join(root, "dir-000"))
+
+	m.applyCounts(stale)
+	if n, ok := m.counts[filepath.Join(root, "dir-000")]; ok {
+		t.Errorf("stale result was applied: cached %d", n)
 	}
-	if len(m.counts) != before {
-		t.Errorf("re-entry re-read directories: cache grew %d -> %d", before, len(m.counts))
+}
+
+// TestWorkerStopsWhenUserNavigatesAway: the in-flight worker checks the
+// generation between children, so it stops reading a directory nobody is looking
+// at. Bumping gen before running the command must yield no message at all.
+func TestWorkerStopsWhenUserNavigatesAway(t *testing.T) {
+	root := buildWideTree(t, 20)
+	m := &model{dir: root, height: 15}
+	m.load()
+
+	cmd := m.countVisibleCmd()
+	m.gen.Add(1) // user navigated while the worker was queued
+
+	if msg := cmd(); msg != nil {
+		t.Errorf("stale worker produced %T, want nil", msg)
+	}
+}
+
+// TestCountsAreMemoizedAcrossNavigation: leaving and re-entering a directory must
+// not re-read its children.
+func TestCountsAreMemoizedAcrossNavigation(t *testing.T) {
+	root := buildWideTree(t, 5)
+	m := &model{dir: root, height: 15}
+	m.load()
+	m.applyCounts(m.countVisibleCmd()().(countsMsg))
+
+	if len(m.counts) != 5 {
+		t.Fatalf("expected 5 cached counts, got %d", len(m.counts))
+	}
+
+	m.enter(filepath.Join(root, "dir-000")) // down
+	m.enter(root)                           // and back up
+
+	// clampScroll -> fillFromCache resolves every row from the memo, with no disk
+	// access, so there is nothing left for a background command to do.
+	if got := counted(m); got != 5 {
+		t.Errorf("re-entry resolved %d rows from cache, want 5", got)
+	}
+	if m.countVisibleCmd() != nil {
+		t.Error("re-entering a visited directory should need no background work")
 	}
 }

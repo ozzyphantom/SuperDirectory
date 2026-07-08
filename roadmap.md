@@ -138,15 +138,37 @@ because `previewHeight` and `renderPreview` each called `os.ReadDir` independent
 Locally these cost microseconds. On a USB drive each read is a bus round trip, and a seek on
 a spinning disk.
 
-The fix is the same idea in each place: **bound the work by the terminal height, not the
-directory size.** Counts are deferred until a row is about to be drawn (`fillVisibleCounts`,
-`ensureCounted`) and memoized, so scrolling pays once per revealed row and re-entering a
-directory is free. The preview listing is cached on its node. The wizard's dead helper is
-gone entirely, along with `subdir`, `topLevelSubdirs`, and `topLevelHasSubdirs`.
+**Round one — bound the number of child reads.** Counts were deferred until a row was about
+to be drawn, and memoized. Work became proportional to terminal height, not directory size:
+`pick.load()` went from 121 reads / 79 ms to 16 reads / 16 ms. The wizard's dead helper was
+deleted outright, along with `subdir`, `topLevelSubdirs`, and `topLevelHasSubdirs`. The
+preview listing was cached on its node.
 
-Measured cold on an exFAT volume, 120 subfolders: `pick.load()` 121 reads / 79 ms → 16 reads
-/ 16 ms; `loadChildren` 121 reads → 1 read / 1.2 ms. Regression tests assert the visible-row
-bound directly, and fail if the eager behavior returns.
+**Round two — take the child reads off the critical path.** Round one was only slightly
+faster on a real drive, and it still slowed down with every hop deeper. The remaining cost
+was the *size* of each child read, not the count of them. Counting one child means reading
+that child's whole directory: a folder holding 800 files and one subfolder costs 801 entries
+to learn the number "1". Fifteen of those before the first frame, and documentation scrapes
+hold more files the deeper you go — hence the depth correlation. Bounding by screen height
+was the wrong axis.
+
+Counting is now asynchronous in both the picker and the exclusion tree. A hop costs exactly
+one directory read — the one you entered — and subfolder hints arrive a moment later, from a
+background worker whose results land through the normal Bubble Tea message loop. The picker
+carries a generation counter, so hopping quickly does not leave a queue of workers competing
+for the disk; a stale worker stops between children and its result is discarded. In the tree,
+nodes are stable objects, so results are always safe to apply, and a `counting` flag keeps a
+node from being dispatched twice.
+
+Two things fell out. `expandCurrent` used to establish `hasSubdirs` (one directory read) and
+then call `loadChildren` on the very same directory (a second read); it now just calls
+`loadChildren` and expands if there is anything inside. And an unknown count must render as
+*no label*, never `(0 files, 0 dirs)` — a zero is a lie about a folder, not a placeholder.
+
+Measured cold on exFAT, 15 subfolders each holding 800 files: a hop went from **45 ms to
+1.8 ms**, with the 46 ms of child reads moved off the path you wait on. Tests assert that
+`load()` and `loadChildren` touch no child directory at all, that stale results are discarded,
+and that in-flight nodes are never dispatched twice. `go test -race` is clean.
 
 A side effect worth noting: `previewHeight` used to return 2 lines on a read error while
 `renderPreview` drew 0, silently misaligning the layout. Sharing one memoized listing removed
