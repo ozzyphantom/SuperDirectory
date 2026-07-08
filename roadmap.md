@@ -81,6 +81,31 @@ compressor into `gz/` and `bz2/`.
 Trade-off accepted: `jpeg` and `jpg` remain separate extension folders under `Images/`.
 Canonicalizing aliases is a one-line change if it grates in practice.
 
+## External drives (2026-07-08) — verified, one bug fixed
+
+Tested against real exFAT and FAT32 volumes (`hdiutil` disk images), in every direction:
+internal→drive, drive→internal, drive→drive. Both modes. Cross-device copy works, nested
+directory creation works, and filenames that are legal on APFS but reserved on exFAT
+(`?`, `*`, `|`) are remapped by the macOS driver rather than failing.
+
+**Silent data loss, found and fixed.** `flatten.Unique` reserved destination names
+case-sensitively. Pooling by file type discards the directory, so `Trip/beach.JPG` and
+`Work/Beach.jpg` were planned as two distinct destinations — and on any case-insensitive
+volume (APFS, NTFS, exFAT, FAT32, i.e. almost everywhere) the second copy silently
+overwrote the first. Two files in, one file out, zero failures reported. Reservation is now
+case-insensitive; the returned filename keeps its original case. On a truly case-sensitive
+volume this only ever adds a `_1` to two names differing solely in case — the safe
+direction, matching the copy-into-itself guard's existing trade-off.
+
+Not external-drive specific: the same loss happened copying to the internal disk. The
+question surfaced it.
+
+**Known, unfixed.** Copying *from* a Mac-formatted drive drags along macOS metadata:
+AppleDouble `._` sidecars and `.fseventsd/`, `.Spotlight-V100/`, `.DS_Store`. Flattening a
+drive root produced 86 files, 51 of them junk. And `flatten.Copy` does not preserve
+modification times, so an archival copy to an external drive lands with today's date.
+See Feature ideas.
+
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser
@@ -105,3 +130,8 @@ set.
 - A user-editable extension→category table (today it is compiled into `organize.go`).
 - Canonicalize extension aliases (`jpeg`→`jpg`, `tif`→`tiff`, `htm`→`html`) so organize
   mode does not split one file type across two folders.
+- Skip filesystem metadata when walking: AppleDouble `._*` sidecars, `.DS_Store`,
+  `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`, `Thumbs.db`, `$RECYCLE.BIN/`. Matters most
+  when the source is an external drive, where they can outnumber the real files.
+- Preserve modification times (`os.Chtimes` after copy). A superdirectory built for archival
+  currently reports every file as created today.

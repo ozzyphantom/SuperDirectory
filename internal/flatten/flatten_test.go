@@ -98,6 +98,28 @@ func TestUniqueCollisionSuffix(t *testing.T) {
 	}
 }
 
+// TestUniqueIsCaseInsensitive guards against silent data loss. macOS, Windows,
+// and every exFAT/FAT32 external drive fold case, so two reservations differing
+// only in case name one file. The second must be suffixed, and both must keep
+// the case they came in with.
+func TestUniqueIsCaseInsensitive(t *testing.T) {
+	used := map[string]bool{}
+	a := Unique(used, "beach.JPG")
+	b := Unique(used, "Beach.jpg")
+	c := Unique(used, "BEACH.JPG")
+
+	if a != "beach.JPG" {
+		t.Errorf("first reservation should pass through unchanged, got %q", a)
+	}
+	if b != "Beach_1.jpg" {
+		t.Errorf("case-only collision must be suffixed, got %q", b)
+	}
+	// _1 is already taken case-insensitively by Beach_1.jpg, so this must reach _2.
+	if c != "BEACH_2.JPG" {
+		t.Errorf("suffixed names must also collide case-insensitively, got %q", c)
+	}
+}
+
 func TestCopyProducesFiles(t *testing.T) {
 	root := buildTree(t)
 	items, err := Plan(root, nil)

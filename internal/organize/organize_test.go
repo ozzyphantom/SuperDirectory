@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
@@ -149,6 +150,56 @@ func TestPlanKeepSourceTreeRecreatesNesting(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("item %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestPlanPooledSurvivesCaseOnlyCollision is the regression test for silent data
+// loss on case-insensitive filesystems — which is to say macOS, Windows, and
+// every exFAT/FAT32 external drive.
+//
+// Pooling by file type discards the directory, so Trip/beach.JPG and
+// Work/Beach.jpg both aim at Images/jpg/. Their names differ only in case. If the
+// plan reserves them as two distinct destinations, the copier writes one file
+// twice and the first photo is gone, with no failure reported.
+func TestPlanPooledSurvivesCaseOnlyCollision(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"Trip/beach.JPG", "Work/Beach.jpg"} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(rel), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := Plan(root, nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 planned items, got %d", len(items))
+	}
+
+	// The two destinations must differ by more than case.
+	a := strings.ToLower(filepath.ToSlash(items[0].Dst))
+	b := strings.ToLower(filepath.ToSlash(items[1].Dst))
+	if a == b {
+		t.Fatalf("both files planned to the same case-folded destination %q — "+
+			"the second would silently overwrite the first on APFS/exFAT/NTFS", a)
+	}
+
+	// And copying must actually leave two files, with both contents intact.
+	target := t.TempDir()
+	if f := flatten.Copy(target, items, nil); len(f) != 0 {
+		t.Fatalf("unexpected copy failures: %v", f)
+	}
+	entries, err := os.ReadDir(filepath.Join(target, "Images", "jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 files in Images/jpg, found %d — a photo was lost", len(entries))
 	}
 }
 

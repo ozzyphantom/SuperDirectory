@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Item is one planned copy: an absolute source path, and the destination
@@ -83,19 +84,32 @@ func Plan(source string, excluded map[string]bool) ([]Item, error) {
 }
 
 // Unique reserves name in used, appending _1, _2, ... before the extension
-// until it finds a free slot. Exported so package organize can apply the same
-// collision rule to its nested paths.
+// until it finds a free slot. The returned name keeps its original case.
+// Exported so package organize can apply the same collision rule to its nested
+// paths.
+//
+// Reservation is CASE-INSENSITIVE. On macOS (APFS), Windows (NTFS), and nearly
+// every external drive (exFAT, FAT32), "beach.JPG" and "Beach.jpg" name the same
+// file. Reserving them as distinct would plan two copies to one destination, and
+// the second would silently overwrite the first — data loss with no failure
+// reported. Package organize makes this easy to reach: pooling by file type
+// discards the directory, so two files that differed only by folder can end up
+// differing only by case.
+//
+// On a genuinely case-sensitive volume this only ever adds a numeric suffix to
+// two names that differ solely in case. That is the safe direction, and matches
+// the same trade-off the wizard's copy-into-itself guard already accepts.
 func Unique(used map[string]bool, name string) string {
-	if !used[name] {
-		used[name] = true
+	if key := strings.ToLower(name); !used[key] {
+		used[key] = true
 		return name
 	}
 	ext := filepath.Ext(name)
 	base := name[:len(name)-len(ext)]
 	for i := 1; ; i++ {
 		cand := fmt.Sprintf("%s_%d%s", base, i, ext)
-		if !used[cand] {
-			used[cand] = true
+		if key := strings.ToLower(cand); !used[key] {
+			used[key] = true
 			return cand
 		}
 	}

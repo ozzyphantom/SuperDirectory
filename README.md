@@ -147,7 +147,9 @@ Three details worth knowing:
 - **Dotfiles have no extension.** `.gitignore` goes to `Other/no-extension/`, not `Other/gitignore/`.
 - **Compound suffixes stay whole.** `backup.tar.gz` goes to `Archives/tar.gz/`, so tarballs group as tarballs rather than splitting by compressor into `gz/` and `bz2/`.
 
-Pooled layout resolves name collisions with the same `_1`, `_2` suffix rule as flatten mode. The "keep original folders" layout cannot collide: a file's path relative to the source is already unique.
+Pooled layout resolves name collisions with the same `_1`, `_2` suffix rule as flatten mode. Collisions are detected **case-insensitively**, because macOS, Windows, and every exFAT/FAT32 external drive treat `beach.JPG` and `Beach.jpg` as one file — so `Trip/beach.JPG` and `Work/Beach.jpg` become `beach.JPG` and `Beach_1.jpg` rather than one overwriting the other. Filenames keep their original case.
+
+The "keep original folders" layout cannot collide at all: a file's path relative to the source is already unique.
 
 Classification is by filename, not content: a `.pdf` renamed to `.txt` is sorted as text.
 
