@@ -44,20 +44,47 @@ item does not force Python.
 **Distribution note.** Apple Developer license is in hand, so macOS notarization is
 settled. Single-binary install is frictionless on macOS, Windows, and Linux.
 
-**Status.** Working proof-of-concept at [`go-spike/`](./go-spike/): the flatten core
-(tested), a Charm/Huh wizard, an interactive recursive exclusion tree (Bubble Tea), and
-the extractor seam. Cross-compiles to Windows, Linux, and macOS as single static binaries.
+**Status.** Done, and promoted (2026-07-08). The Go app is the repository root: two planners
+over a shared walk — flatten and organize-by-file-type — both tested, a Charm/Huh wizard, an
+interactive recursive exclusion tree (Bubble Tea), and the extractor seam. Cross-compiles to
+Windows, Linux, and macOS as single static binaries. The Python script moved to
+[`legacy-python/`](./legacy-python/) as the UX reference it was always going to become; the
+module is now `github.com/ozzyphantom/SuperDirectory`, so `go install …@latest` works.
 
 ## Next steps (build order)
 
-1. Test the spike's UX in a real terminal; react to the picker and exclusion-tree feel.
+1. Test the organize mode's UX in a real terminal; react to the mode and layout screens.
 2. Wire up GoReleaser + Developer ID notarization for real cross-platform releases.
-3. Add content-aware features on the `Extractor` seam: type sorting, dedup hashing, search.
+3. Add the remaining content-aware features on the `Extractor` seam: dedup hashing, search.
+
+## Organize by file type (2026-07-08) — done
+
+A second top-level mode, chosen on a new first wizard screen. Where flatten pools every
+file into one folder, organize sorts each into `Category/extension/` — the category folds
+`.jpg` and `.heic` under `Images/`, the extension keeps them distinguishable inside it.
+An optional layout step recreates each file's original folder nesting inside its extension
+folder (`Documents/pdf/Work/Invoices/q3.pdf`), so provenance survives the reorganization.
+
+**How it fits the architecture.** `flatten.Item` now carries a destination *relative path*
+rather than a bare filename, and `flatten.Copy` creates parent directories on demand
+(caching the ones it made). The tree walk moved to `flatten.Walk`, shared by both planners
+so exclusion semantics cannot drift between them. A new layout means a new planner, not a
+change to the copier. This is the separation the Go rewrite was supposed to buy, and it
+held: the new planner is ~100 lines and touches nothing in the copier.
+
+**The classification traps, all tested.** Go's `filepath.Ext(".gitignore")` returns
+`".gitignore"`, which would have created a `gitignore/` folder for every dotfile. Extensions
+are case-folded so `photo.JPG` and `photo.jpg` share `Images/jpg/`. Compound suffixes stay
+whole, so `backup.tar.gz` lands in `Archives/tar.gz/` instead of splitting tarballs by
+compressor into `gz/` and `bz2/`.
+
+Trade-off accepted: `jpeg` and `jpg` remain separate extension folders under `Images/`.
+Canonicalizing aliases is a one-line change if it grates in practice.
 
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser
-([`internal/pick`](./go-spike/internal/pick)) and made the wizard a step machine so every
+([`internal/pick`](./internal/pick)) and made the wizard a step machine so every
 screen can go back. Fixes from Oscar's test: typing now jumps the cursor instead of opening
 a text box; the source opens at home, not root; a cyan theme replaces huh's hard-to-read
 purple. An adversarial review (3 dimensions, findings independently refuted) caught and fixed
@@ -73,3 +100,8 @@ set.
 ## Feature ideas
 
 - Option to scrape all titles from the documents listed.
+- Content-based classification: a `.pdf` renamed `.txt` is currently sorted as text. The
+  `extract.sniff` MIME detector could settle it, at the cost of opening every file.
+- A user-editable extension→category table (today it is compiled into `organize.go`).
+- Canonicalize extension aliases (`jpeg`→`jpg`, `tif`→`tiff`, `htm`→`html`) so organize
+  mode does not split one file type across two folders.

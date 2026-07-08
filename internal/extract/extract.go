@@ -71,7 +71,7 @@ func sniff(path string) string {
 // ErrExtractorUnavailable is returned by backends that are not wired up.
 var ErrExtractorUnavailable = errors.New("extractor unavailable: no helper configured")
 
-// PythonExtractor is the FUTURE seam — deliberately NOT wired in this spike.
+// PythonExtractor is the FUTURE seam — deliberately NOT wired up yet.
 // It documents the exact shape the polyglot integration takes: launch an
 // optional Python helper as a subprocess and decode JSON from its stdout.
 // Because the coupling is process-level (not libpython/CGO), the Go binary
@@ -87,7 +87,7 @@ func (p PythonExtractor) Extract(path string) (Metadata, error) {
 	if p.Helper == "" {
 		return Metadata{}, ErrExtractorUnavailable
 	}
-	// Blueprint (intentionally not executed in the spike):
+	// Blueprint (intentionally not executed yet):
 	//
 	//   out, err := exec.Command(p.Helper, path).Output()
 	//   if err != nil {

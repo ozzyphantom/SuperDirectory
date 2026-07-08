@@ -35,7 +35,7 @@ func buildTree(t *testing.T) string {
 func planNames(items []Item) []string {
 	names := make([]string, len(items))
 	for i, it := range items {
-		names[i] = it.DstName
+		names[i] = it.Dst
 	}
 	sort.Strings(names)
 	return names
@@ -79,7 +79,7 @@ func TestPlanExclusionSkipsSubtree(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, it := range items {
-		if filepath.Base(filepath.Dir(it.Src)) == "skipme" || it.DstName == "deep_x.txt" {
+		if filepath.Base(filepath.Dir(it.Src)) == "skipme" || it.Dst == "deep_x.txt" {
 			t.Errorf("excluded subtree leaked into plan: %q", it.Src)
 		}
 	}
@@ -90,9 +90,9 @@ func TestPlanExclusionSkipsSubtree(t *testing.T) {
 
 func TestUniqueCollisionSuffix(t *testing.T) {
 	used := map[string]bool{}
-	a := unique(used, "report.txt")
-	b := unique(used, "report.txt")
-	c := unique(used, "report.txt")
+	a := Unique(used, "report.txt")
+	b := Unique(used, "report.txt")
+	c := Unique(used, "report.txt")
 	if a != "report.txt" || b != "report_1.txt" || c != "report_2.txt" {
 		t.Errorf("collision suffixing wrong: %q %q %q", a, b, c)
 	}

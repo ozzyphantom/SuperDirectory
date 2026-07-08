@@ -1,3 +1,11 @@
+# Go build artifacts
+/superdirectory
+/superdirectory.exe
+/sd-*
+*.exe
+/dist/
+
+# Legacy Python app (legacy-python/)
 venv/
 __pycache__/
 *.pyc

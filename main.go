@@ -1,9 +1,12 @@
-// SuperDirectory — Go spike.
+// SuperDirectory builds a "superdirectory" from a nested tree: either one flat
+// folder holding every file, or a folder per file type.
 //
-// Proof-of-concept for the Go rewrite. Demonstrates three things the language
-// decision hinges on:
-//  1. The functional core (walk + collision-free copy) in package flatten.
-//  2. A Charm/huh interactive wizard that replaces questionary+prompt_toolkit.
+// The code is layered in three parts:
+//  1. The functional core: a shared walk plus two planners — package flatten
+//     (one folder, every file) and package organize (a folder per file type) —
+//     both executed by the same collision-free copier.
+//  2. A Charm/huh interactive wizard (package wizard), which knows nothing about
+//     copying and returns a plain Result.
 //  3. The content-inspection seam (package extract) where a future Python
 //     backend can plug in without touching the Go core.
 //
@@ -22,9 +25,10 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
-	"superdirectory-spike/internal/extract"
-	"superdirectory-spike/internal/flatten"
-	"superdirectory-spike/internal/wizard"
+	"github.com/ozzyphantom/SuperDirectory/internal/extract"
+	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/organize"
+	"github.com/ozzyphantom/SuperDirectory/internal/wizard"
 )
 
 var (
@@ -59,11 +63,11 @@ func main() {
 
 func printIntro() {
 	fmt.Println()
-	fmt.Println("  " + cyan.Render("SuperDirectory") + dim.Render("  ·  Go spike"))
-	fmt.Println("  " + dim.Render("Flatten a nested tree into one folder.  ") + key.Render("Ctrl+C") + dim.Render(" exits anytime."))
+	fmt.Println("  " + cyan.Render("SuperDirectory"))
+	fmt.Println("  " + dim.Render("Flatten a nested tree, or sort it by file type.  ") + key.Render("Ctrl+C") + dim.Render(" exits anytime."))
 }
 
-// runOnce drives one full flatten. Returns the created target directory and
+// runOnce drives one full run. Returns the created target directory and
 // whether it completed (false means the user aborted).
 func runOnce() (string, bool) {
 	res, err := wizard.Run()
@@ -75,7 +79,15 @@ func runOnce() (string, bool) {
 		return "", false
 	}
 
-	items, err := flatten.Plan(res.Source, res.Excluded)
+	// Both planners emit []flatten.Item; only the destination layout differs.
+	var items []flatten.Item
+	if res.Mode == wizard.ModeOrganize {
+		items, err = organize.Plan(res.Source, res.Excluded, organize.Options{
+			KeepSourceTree: res.KeepSourceTree,
+		})
+	} else {
+		items, err = flatten.Plan(res.Source, res.Excluded)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "  "+red.Render("Error building plan: ")+err.Error())
 		return "", false
@@ -115,7 +127,7 @@ func postCompletion(target string) bool {
 				Options(
 					huh.NewOption("Open the folder", "open"),
 					huh.NewOption(revealLabel(), "reveal"),
-					huh.NewOption("Flatten another directory", "another"),
+					huh.NewOption("Do another directory", "another"),
 					huh.NewOption("Quit", "quit"),
 				).
 				Value(&action),

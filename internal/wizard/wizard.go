@@ -1,10 +1,14 @@
-// Package wizard is the interactive layer. It walks the user through source,
-// destination, exclusions, and a final confirm, and returns a plain Result. It
-// does no file copying — that belongs to package flatten.
+// Package wizard is the interactive layer. It walks the user through mode,
+// source, destination, exclusions, layout, and a final confirm, and returns a
+// plain Result. It does no file copying — that belongs to package flatten.
 //
 // The flow is a small step machine: every screen can move forward or step back,
-// so the user is never trapped. Directory selection uses package pick (a
-// keyboard browser) rather than raw text prompts; the final confirm uses huh.
+// so the user is never trapped. Two screens are conditional — exclusions appear
+// only when the source has subdirectories, and layout only in ModeOrganize — so
+// stepping backwards must skip whatever was never shown.
+//
+// Directory selection uses package pick (a keyboard browser) rather than raw
+// text prompts; every other screen uses huh.
 package wizard
 
 import (
@@ -18,8 +22,19 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
-	"superdirectory-spike/internal/exclude"
-	"superdirectory-spike/internal/pick"
+	"github.com/ozzyphantom/SuperDirectory/internal/exclude"
+	"github.com/ozzyphantom/SuperDirectory/internal/organize"
+	"github.com/ozzyphantom/SuperDirectory/internal/pick"
+)
+
+// Mode selects which planner builds the superdirectory.
+type Mode int
+
+const (
+	// ModeFlatten collapses the tree into a single folder (package flatten).
+	ModeFlatten Mode = iota
+	// ModeOrganize sorts files into Category/extension folders (package organize).
+	ModeOrganize
 )
 
 // Result is the fully-resolved plan input the core needs.
@@ -27,6 +42,11 @@ type Result struct {
 	Source   string
 	Target   string
 	Excluded map[string]bool // absolute paths of subdirectories to skip
+	Mode     Mode
+
+	// KeepSourceTree applies to ModeOrganize only: recreate each file's
+	// original folder nesting inside its extension folder.
+	KeepSourceTree bool
 }
 
 // errBack is an internal sentinel: a step is asking to return to the previous
@@ -42,26 +62,51 @@ func IsAbort(err error) bool {
 // error (use IsAbort to detect a clean cancel).
 func Run() (*Result, error) {
 	var (
-		source   string
-		target   string
-		excluded = map[string]bool{}
-		hasSubs  bool
+		mode           Mode
+		source         string
+		target         string
+		excluded       = map[string]bool{}
+		hasSubs        bool
+		keepSourceTree bool
 	)
 
 	const (
-		stepSource = iota
+		stepMode = iota
+		stepSource
 		stepDest
 		stepExclude
+		stepLayout
 		stepConfirm
 	)
 
-	step := stepSource
+	// prev returns the step to land on when moving backwards from stepConfirm or
+	// stepLayout, skipping the screens this run never showed.
+	prevBeforeLayout := func() int {
+		if hasSubs {
+			return stepExclude
+		}
+		return stepDest
+	}
+
+	step := stepMode
 	for {
 		switch step {
+		case stepMode:
+			m, err := askMode(mode)
+			if err != nil {
+				return nil, err // first screen: back and cancel are both a cancel
+			}
+			mode = m
+			step = stepSource
+
 		case stepSource:
 			s, err := askSource()
+			if errors.Is(err, errBack) {
+				step = stepMode
+				continue
+			}
 			if err != nil {
-				return nil, err // cancel; back on the first step is a cancel too
+				return nil, err
 			}
 			if s != source {
 				// A new source invalidates choices tied to the old one.
@@ -87,7 +132,7 @@ func Run() (*Result, error) {
 		case stepExclude:
 			if !hasSubs {
 				excluded = map[string]bool{}
-				step = stepConfirm
+				step = stepLayout
 				continue
 			}
 			ex, err := askExclusions(source, excluded)
@@ -99,21 +144,43 @@ func Run() (*Result, error) {
 				return nil, err
 			}
 			excluded = ex
+			step = stepLayout
+
+		case stepLayout:
+			if mode != ModeOrganize {
+				step = stepConfirm
+				continue
+			}
+			keep, err := askLayout(keepSourceTree)
+			if errors.Is(err, errBack) {
+				step = prevBeforeLayout()
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			keepSourceTree = keep
 			step = stepConfirm
 
 		case stepConfirm:
-			dec, err := confirm(source, target, excluded)
+			dec, err := confirm(mode, source, target, excluded, keepSourceTree)
 			if err != nil {
 				return nil, err
 			}
 			switch dec {
 			case decCopy:
-				return &Result{Source: source, Target: target, Excluded: excluded}, nil
+				return &Result{
+					Source:         source,
+					Target:         target,
+					Excluded:       excluded,
+					Mode:           mode,
+					KeepSourceTree: mode == ModeOrganize && keepSourceTree,
+				}, nil
 			case decBack:
-				if hasSubs {
-					step = stepExclude
+				if mode == ModeOrganize {
+					step = stepLayout
 				} else {
-					step = stepDest
+					step = prevBeforeLayout()
 				}
 			case decCancel:
 				return nil, huh.ErrUserAborted
@@ -122,15 +189,72 @@ func Run() (*Result, error) {
 	}
 }
 
+// askMode is the first screen: which kind of superdirectory to build.
+func askMode(current Mode) (Mode, error) {
+	choice := "flatten"
+	if current == ModeOrganize {
+		choice = "organize"
+	}
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("What kind of superdirectory?").
+			Description("Flatten pools every file in one folder.\nOrganize sorts them into "+strings.Join(organize.Categories(), ", ")+", and Other.").
+			Options(
+				huh.NewOption("Flatten — one folder, every file", "flatten"),
+				huh.NewOption("Organize by file type — a folder per type", "organize"),
+			).
+			Value(&choice),
+	)).WithTheme(Theme())
+	if err := form.Run(); err != nil {
+		return current, huh.ErrUserAborted // ctrl+c
+	}
+	if choice == "organize" {
+		return ModeOrganize, nil
+	}
+	return ModeFlatten, nil
+}
+
+// askLayout asks whether the original folder nesting survives inside each
+// extension folder. Organize mode only.
+func askLayout(current bool) (bool, error) {
+	choice := "pool"
+	if current {
+		choice = "keep"
+	}
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Inside each type folder, keep the original folders?").
+			Description("No:   Documents/pdf/q3.pdf\nYes:  Documents/pdf/Work/Invoices/q3.pdf").
+			Options(
+				huh.NewOption("No — pool every file of a type together", "pool"),
+				huh.NewOption("Yes — group by the folder it came from", "keep"),
+				huh.NewOption("Go back", "back"),
+			).
+			Value(&choice),
+	)).WithTheme(Theme())
+	if err := form.Run(); err != nil {
+		return current, huh.ErrUserAborted // ctrl+c
+	}
+	switch choice {
+	case "back":
+		return current, errBack
+	case "keep":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 func askSource() (string, error) {
 	s, err := pick.Run(pick.Options{
-		Title: "Choose the folder to flatten  (open with →, then press enter)",
+		Title: "Choose the folder to use as the source  (open with →, then press enter)",
 		Start: home(),
 	})
 	if err != nil {
-		// Both a step-back and a quit end the wizard here: source is the first
-		// screen, so there is nothing behind it.
-		if errors.Is(err, pick.ErrBack) || errors.Is(err, pick.ErrCanceled) {
+		if errors.Is(err, pick.ErrBack) {
+			return "", errBack // esc returns to the mode screen
+		}
+		if errors.Is(err, pick.ErrCanceled) {
 			return "", huh.ErrUserAborted
 		}
 		return "", err
@@ -149,7 +273,7 @@ func askDestination(source, prevTarget string) (string, error) {
 	}
 
 	target, err := pick.Run(pick.Options{
-		Title:       "Choose where to save the flattened copy  (open with →, then press enter)",
+		Title:       "Choose where to save the superdirectory  (open with →, then press enter)",
 		Start:       start,
 		NameEntry:   true,
 		NameDefault: nameDefault,
@@ -227,8 +351,16 @@ const (
 	decCancel
 )
 
-func confirm(source, target string, excluded map[string]bool) (decision, error) {
+func confirm(mode Mode, source, target string, excluded map[string]bool, keepSourceTree bool) (decision, error) {
 	summary := fmt.Sprintf("From:  %s\nTo:    %s\n", source, target)
+	if mode == ModeOrganize {
+		summary += "Mode:  organize by file type\n"
+		if keepSourceTree {
+			summary += "       (keeping original folders inside each type)\n"
+		}
+	} else {
+		summary += "Mode:  flatten into one folder\n"
+	}
 	switch n := len(excluded); {
 	case n == 0:
 		summary += "Excluding: nothing"
