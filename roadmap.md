@@ -174,6 +174,38 @@ A side effect worth noting: `previewHeight` used to return 2 lines on a read err
 `renderPreview` drew 0, silently misaligning the layout. Sharing one memoized listing removed
 the disagreement, and a test now pins reserved height to rendered height.
 
+## Copy throughput (2026-07-08) — measured, not optimized
+
+Copying to an external drive felt slow. Two hypotheses, both tested, both wrong; the third
+finding is a display gap, not a performance one.
+
+**Is the copy syscall-bound?** On macOS, `os.File.readFrom` is a stub — `zero_copy_stub.go`
+is built for every GOOS except freebsd, linux, and solaris — so `io.Copy` between two files
+falls back to a 32 KiB buffered loop. A 30 MB photo becomes ~960 read/write pairs. Tempting.
+Measured against exFAT, `fsync`'d: 32 KiB → 85.7 MB/s, 64 KiB → 88.8, 256 KiB → 84.2,
+1 MiB → 81.2, 4 MiB → 77.9. Cutting syscalls 137-fold changes nothing, and bigger buffers are
+marginally *worse*. The copy is bound by the device. **The buffer stays at the standard
+library default**; a knob with a story and no evidence is worse than no knob. (A stale comment
+claiming `fcopyfile on macOS` was removed — no such fast path exists in Go.)
+
+**Would a byte-accurate progress bar be free?** No. Learning each file's size means
+`d.Info()`, which on exFAT costs an `lstat` per file. Walking 2000 files: 4 ms without sizes,
+175 ms with — **43x slower**, on an SSD-backed image, before the copy even starts. On the USB
+drives where progress matters most, that is a visible stall. The bar therefore tracks files,
+not bytes.
+
+**What was actually missing was the number.** `flatten.Copy` now reports a `Progress`
+(files done, bytes written, elapsed) after each file, and the progress line shows bytes copied,
+a smoothed throughput in MB/s, and an estimated time remaining. Bytes count only successful
+writes, so a failing copy cannot look fast. The rate is exponentially smoothed over a 300 ms
+resample interval rather than averaged over the run: a lifetime average hides the moment a
+drive begins to throttle, which is exactly what you want to see. The ETA extrapolates from
+files completed — honest for a folder of photos, poor for a mixed tree — and is suppressed
+below one second and until three files have landed.
+
+Not done, deliberately: parallel copies. Concurrency can raise throughput on flash and lower
+it on a spinning disk, and nothing here has been measured against real hardware.
+
 ## UX round 2 (2026-07-07) — done
 
 Replaced huh's FilePicker with a purpose-built keyboard directory browser

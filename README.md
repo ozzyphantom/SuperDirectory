@@ -69,6 +69,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 - **Exclusion system** — selectively skip subdirectories at any depth, with a recursive tree
 - **Directory preview** — inspect directory contents before deciding to include or exclude
 - **External-drive ready** — works on exFAT and FAT32, skips the metadata macOS and Windows leave on a drive, and preserves modification times
+- **Live throughput** — the progress bar reports MB/s, bytes copied, and an estimated time remaining, so a slow drive is visibly a slow drive
 - **Safe by default** — refuses a destination inside the source, so a copy can never eat itself
 
 ## Requirements

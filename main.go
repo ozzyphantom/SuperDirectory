@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -105,14 +106,23 @@ func runOnce() (string, bool) {
 	}
 	fmt.Printf("  Copying %s file(s) into %s\n\n", bold.Render(fmt.Sprintf("%d", total)), orange.Render(res.Target))
 
-	failures := flatten.Copy(res.Target, items, renderProgress)
+	meter := &rateMeter{}
+	var last flatten.Progress
+	failures := flatten.Copy(res.Target, items, func(p flatten.Progress) {
+		last = p
+		renderProgress(p, meter.observe(p))
+	})
 	if len(failures) > 0 {
 		fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
 		for _, f := range failures {
 			fmt.Printf("    %s  %s\n       %s\n", red.Render("✗"), f.Src, dim.Render(f.Err.Error()))
 		}
 	}
-	fmt.Println("\n  " + green.Render(bold.Render("Finished!")))
+	fmt.Printf("\n  %s  %s in %s  ·  %s average\n",
+		green.Render(bold.Render("Finished!")),
+		bold.Render(humanBytes(last.Bytes)),
+		humanDuration(last.Elapsed),
+		bold.Render(humanRate(last.Rate())))
 	return res.Target, true
 }
 
@@ -186,13 +196,121 @@ func openInFileManager(target string, reveal bool) {
 	_ = cmd.Process.Release()
 }
 
-func renderProgress(done, total int) {
-	const width = 40
-	filled := width * done / total
-	bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
-	fmt.Printf("\r  [%s] %3d%%  (%d/%d)", bar, done*100/total, done, total)
-	if done == total {
+// rateMeter smooths throughput for display. A lifetime average hides exactly what
+// you want to see on an external drive — the moment it slows down, whether from
+// thermal throttling, a run of small files, or a full write cache. It reports a
+// recent rate instead.
+type rateMeter struct {
+	lastAt    time.Duration
+	lastBytes int64
+	rate      float64 // exponentially-smoothed bytes/sec
+}
+
+// observe folds one progress report into the smoothed rate. Samples closer than
+// resampleAfter are accumulated rather than measured, because a burst of tiny
+// files arriving within a millisecond of each other produces a meaningless
+// instantaneous rate.
+func (m *rateMeter) observe(p flatten.Progress) float64 {
+	const resampleAfter = 300 * time.Millisecond
+	dt := p.Elapsed - m.lastAt
+	if dt < resampleAfter && m.rate != 0 {
+		return m.rate
+	}
+	if secs := dt.Seconds(); secs > 0 {
+		instant := float64(p.Bytes-m.lastBytes) / secs
+		if m.rate == 0 {
+			m.rate = instant
+		} else {
+			m.rate = 0.6*m.rate + 0.4*instant // favor history, follow real changes
+		}
+	}
+	m.lastAt, m.lastBytes = p.Elapsed, p.Bytes
+	return m.rate
+}
+
+// renderProgress draws the progress line. The bar tracks files, not bytes: knowing
+// the total byte count in advance would cost an lstat per file before the copy
+// began — measured at 43x the cost of the walk itself on exFAT — which is a poor
+// trade on the very drives where progress matters most.
+func renderProgress(p flatten.Progress, rate float64) {
+	// Erase to end of line: the text shrinks as the ETA does, and leftovers from a
+	// longer previous frame would otherwise linger.
+	fmt.Print("\r" + progressLine(p, rate) + "\033[K")
+	if p.Done == p.Total {
 		fmt.Println()
+	}
+}
+
+// progressLine builds the progress display. Split from renderProgress so it can be
+// tested without capturing stdout.
+func progressLine(p flatten.Progress, rate float64) string {
+	const width = 40
+	filled := width * p.Done / p.Total
+	bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
+
+	line := fmt.Sprintf("  [%s] %3d%%  %d/%d  %s  %s",
+		bar, p.Done*100/p.Total, p.Done, p.Total,
+		dim.Render(humanBytes(p.Bytes)), bold.Render(humanRate(rate)))
+	if eta, ok := estimateRemaining(p); ok {
+		line += dim.Render("  ~" + humanDuration(eta) + " left")
+	}
+	return line
+}
+
+// estimateRemaining extrapolates from files completed, not bytes, because the
+// total byte count is deliberately unknown. It is therefore only as good as the
+// assumption that the remaining files resemble the ones already copied — fair for
+// a folder of photos, poor for a mixed tree. It is suppressed until enough files
+// have landed for the average to mean anything.
+func estimateRemaining(p flatten.Progress) (time.Duration, bool) {
+	remaining := p.Total - p.Done
+	if p.Done < 3 || remaining <= 0 || p.Elapsed <= 0 {
+		return 0, false
+	}
+	perFile := p.Elapsed / time.Duration(p.Done)
+	eta := perFile * time.Duration(remaining)
+	if eta < time.Second {
+		return 0, false // "~0s left" tells the user nothing
+	}
+	return eta, true
+}
+
+// humanBytes formats a byte count in decimal units, matching how drive and
+// transfer speeds are quoted.
+func humanBytes(n int64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTP"[exp])
+}
+
+func humanRate(bytesPerSec float64) string {
+	if bytesPerSec <= 0 {
+		return "— MB/s"
+	}
+	return fmt.Sprintf("%.1f MB/s", bytesPerSec/1e6)
+}
+
+func humanDuration(d time.Duration) string {
+	// A fast copy really did take a fraction of a second; rounding it to "0s"
+	// makes the summary look broken.
+	if d < time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 }
 

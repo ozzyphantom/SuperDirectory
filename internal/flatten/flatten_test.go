@@ -240,3 +240,74 @@ func TestCopyProducesFiles(t *testing.T) {
 		t.Errorf("expected %d copied files, found %d", len(items), len(entries))
 	}
 }
+
+// TestCopyReportsBytesAndProgress: the throughput shown to the user is derived
+// from these numbers, so they must count only what actually reached the disk.
+func TestCopyReportsBytesAndProgress(t *testing.T) {
+	root := t.TempDir()
+	sizes := []int{100, 250, 650} // 1000 bytes total
+	for i, n := range sizes {
+		name := filepath.Join(root, string(rune('a'+i))+".bin")
+		if err := os.WriteFile(name, make([]byte, n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []Progress
+	failures := Copy(t.TempDir(), items, func(p Progress) { seen = append(seen, p) })
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 progress reports, got %d", len(seen))
+	}
+
+	for i, p := range seen {
+		if p.Done != i+1 || p.Total != 3 {
+			t.Errorf("report %d: Done=%d Total=%d", i, p.Done, p.Total)
+		}
+		if p.Elapsed <= 0 {
+			t.Errorf("report %d: Elapsed must advance, got %v", i, p.Elapsed)
+		}
+	}
+	// Bytes accumulate monotonically and finish at the true total.
+	if last := seen[len(seen)-1]; last.Bytes != 1000 {
+		t.Errorf("final Bytes = %d, want 1000", last.Bytes)
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i].Bytes < seen[i-1].Bytes {
+			t.Errorf("Bytes went backwards: %d -> %d", seen[i-1].Bytes, seen[i].Bytes)
+		}
+	}
+}
+
+// TestCopyDoesNotCountFailedBytes: a file that could not be written must not
+// contribute to throughput, or a failing copy would look fast.
+func TestCopyDoesNotCountFailedBytes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.bin"), make([]byte, 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Point one item at a source that cannot be opened.
+	items = append(items, Item{Src: filepath.Join(root, "does-not-exist.bin"), Dst: "gone.bin"})
+
+	var last Progress
+	failures := Copy(t.TempDir(), items, func(p Progress) { last = p })
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d", len(failures))
+	}
+	if last.Bytes != 500 {
+		t.Errorf("Bytes = %d, want 500 — a failed file inflated the throughput", last.Bytes)
+	}
+	if last.Done != 2 || last.Total != 2 {
+		t.Errorf("failed files still count as attempted: Done=%d Total=%d", last.Done, last.Total)
+	}
+}
