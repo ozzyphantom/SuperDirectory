@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"archive/zip"
 	"errors"
 	"os"
 	"path/filepath"
@@ -266,5 +267,65 @@ func TestBatchNumbersSortAsText(t *testing.T) {
 	}
 	if !strings.HasPrefix(items[0].Dst, "Batch 01") || !strings.HasPrefix(items[119].Dst, "Batch 12") {
 		t.Errorf("first %q, last %q", items[0].Dst, items[119].Dst)
+	}
+}
+
+// TestExpandPutsArchiveContentsInItsPlace: a zip's files take the zip's place and
+// name; the zip is not copied; the staging folder is gone after the run; and the
+// report says where each file came from.
+func TestExpandPutsArchiveContentsInItsPlace(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{"readme.txt": "hi"})
+	zf, _ := os.Create(filepath.Join(src, "Manual.zip"))
+	zw := zip.NewWriter(zf)
+	for name, body := range map[string]string{"docs/setup.htm": "setup", "docs/faq.htm": "faq", "../escape.htm": "nope"} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	zf.Close()
+
+	target := filepath.Join(filepath.Dir(src), "Out")
+	sum, err := Run(job.Job{Sources: []string{src}, Target: target, Expand: true, Layout: job.ByDepth, Depth: 3}, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(listTarget(t, target), ","); got != "Manual/docs/faq.htm,Manual/docs/setup.htm,readme.txt" {
+		t.Errorf("target holds %s", got)
+	}
+	if sum.Expanded != 2 {
+		t.Errorf("Expanded = %d", sum.Expanded)
+	}
+	if _, err := os.Stat(filepath.Join(target, StateDirName, "expanded")); !os.IsNotExist(err) {
+		t.Error("the staging folder was left behind")
+	}
+	csv, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.csv"))
+	for _, want := range []string{"Manual.zip!/docs/setup.htm", "expanded,", "1 entries refused"} {
+		if !strings.Contains(string(csv), want) {
+			t.Errorf("report.csv missing %q:\n%s", want, csv)
+		}
+	}
+}
+
+// TestAbandonedRunLeavesNothing: canceling at the duplicates prompt, after archives
+// were staged, removes the destination the run created.
+func TestAbandonedRunLeavesNothing(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{"a.txt": "same", "b.txt": "same"})
+	zf, _ := os.Create(filepath.Join(src, "x.zip"))
+	zw := zip.NewWriter(zf)
+	w, _ := zw.Create("inner.txt")
+	w.Write([]byte("inner"))
+	zw.Close()
+	zf.Close()
+
+	target := filepath.Join(filepath.Dir(src), "Out")
+	h := &fakeHooks{choose: func(*Found) ([]DupSet, error) { return nil, ErrAbandoned }}
+	_, err := Run(job.Job{Sources: []string{src}, Target: target, Expand: true, Duplicates: []string{job.Identical}}, h, nil)
+	if !errors.Is(err, ErrAbandoned) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("an abandoned run left its destination behind")
 	}
 }

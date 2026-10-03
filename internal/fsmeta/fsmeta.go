@@ -31,6 +31,7 @@ var names = map[string]bool{
 	".temporaryitems":         true,
 	".trashes":                true,
 	".vol":                    true,
+	"__macosx":                true, // Finder's zip sidecar folder
 
 	// Windows
 	"thumbs.db":                 true,

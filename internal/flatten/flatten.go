@@ -43,6 +43,11 @@ type Item struct {
 	Rel     string
 	Size    int64
 	ModTime time.Time
+
+	// Move says Src is a file the run made itself — unpacked from an archive,
+	// merged from documents — staged on the destination's volume. It is renamed
+	// into place rather than copied a second time.
+	Move bool
 }
 
 // Assign gives every item a collision-free Dst from its Want, in plan order. The
@@ -373,6 +378,13 @@ func Execute(target string, items []Item, opts Options) Result {
 		if err := ensureParent(made, filepath.Dir(dst)); err != nil {
 			res.Failures = append(res.Failures, Failure{Src: it.Src, Err: err})
 			res.Outcomes[i] = Failed
+			report(i+1, name)
+			continue
+		}
+		if it.Move && os.Rename(it.Src, dst) == nil {
+			res.Outcomes[i] = Copied
+			res.Copied++
+			res.ClonedBytes += it.Size // in place, but no data moved
 			report(i+1, name)
 			continue
 		}

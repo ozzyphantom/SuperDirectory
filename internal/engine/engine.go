@@ -130,16 +130,17 @@ type run struct {
 	table *organize.Table
 	start time.Time
 
-	notes map[string]string // what happened to a planned file, by source path, for the report
-	gone  []row             // files that left the plan: skipped duplicates, merged documents
-	sum   Summary
+	notes  map[string]string // what happened to a planned file, by source path, for the report
+	origin map[string]string // where a staged file came from, for the report: "manual.zip!/a.htm"
+	gone   []row             // files that left the plan: expanded archives, skipped duplicates, merged documents
+	sum    Summary
 }
 
 // Run carries out the job. It returns the summary of what was done, and an error
 // when the run could not start or did not finish: ErrStopped when stopped,
 // ErrAbandoned when the front end declined at a prompt.
 func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
-	r := &run{j: j, h: h, stop: stop, start: time.Now(), notes: map[string]string{}}
+	r := &run{j: j, h: h, stop: stop, start: time.Now(), notes: map[string]string{}, origin: map[string]string{}}
 	r.sum.Job = j
 	if err := j.Validate(); err != nil {
 		return r.sum, err
@@ -150,8 +151,17 @@ func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
 	}
 	r.table = table
 
+	_, statErr := os.Stat(j.Target)
+	created := errors.Is(statErr, os.ErrNotExist)
 	items, err := r.plan()
 	if err != nil {
+		// Planning may have staged files (expanded archives) in a destination it
+		// created; a run that ends before copying leaves nothing behind.
+		r.cleanup()
+		if created {
+			os.Remove(StateDir(j.Target))
+			os.Remove(j.Target)
+		}
 		return r.sum, err
 	}
 	r.sum.Planned = len(items)
@@ -262,6 +272,9 @@ func (r *run) plan() ([]flatten.Item, error) {
 	}
 	if j.Batch > 0 {
 		r.sum.Batches = batch(items, j.Batch)
+	}
+	for i := range items {
+		items[i].Move = r.staged(items[i].Src)
 	}
 	return items, nil
 }

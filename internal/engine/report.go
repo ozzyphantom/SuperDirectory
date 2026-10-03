@@ -30,7 +30,11 @@ const notebookLMBytes = 200_000_000
 func writeReport(r *run, items []flatten.Item, res flatten.Result) error {
 	var rows []row
 	for i, it := range items {
-		rw := row{src: it.Src, rel: it.Rel, dst: it.Dst, bytes: it.Size, note: r.notes[it.Src]}
+		src := it.Src
+		if o, ok := r.origin[src]; ok {
+			src = o
+		}
+		rw := row{src: src, rel: it.Rel, dst: it.Dst, bytes: it.Size, note: r.notes[it.Src]}
 		switch res.Outcomes[i] {
 		case flatten.Copied:
 			rw.status = "copied"
@@ -107,7 +111,7 @@ func markdown(r *run, rows []row, res flatten.Result) string {
 		counts[rw.status]++
 	}
 	p("\n## Result\n\n")
-	for _, st := range []string{"copied", "cloned", "already there", "skipped", "merged", "failed", "not reached"} {
+	for _, st := range []string{"copied", "cloned", "already there", "expanded", "skipped", "merged", "failed", "not reached"} {
 		if counts[st] > 0 {
 			p("- %s: %d\n", st, counts[st])
 		}
