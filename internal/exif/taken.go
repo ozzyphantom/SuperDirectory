@@ -47,4 +47,3 @@ func Supported(name string) bool {
 	}
 	return false
 }
-
