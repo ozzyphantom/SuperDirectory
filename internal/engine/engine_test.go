@@ -3,6 +3,7 @@ package engine
 import (
 	"archive/zip"
 	"errors"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -327,5 +328,92 @@ func TestAbandonedRunLeavesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Error("an abandoned run left its destination behind")
+	}
+}
+
+// prose writes n paragraphs of seeded pseudo-English, about 60 words each.
+func prose(seed int64, n int) []string {
+	words := strings.Fields("the router forwards each packet to the next hop based on its table while the switch learns " +
+		"addresses from frames and floods unknown destinations across every port in the vlan so the administrator " +
+		"should configure trunks carefully and verify spanning tree priorities before adding new links to the core")
+	r := rand.New(rand.NewSource(seed))
+	var paras []string
+	for p := 0; p < n; p++ {
+		var b strings.Builder
+		for w := 0; w < 60; w++ {
+			b.WriteString(words[r.Intn(len(words))])
+			b.WriteByte(' ')
+		}
+		paras = append(paras, b.String())
+	}
+	return paras
+}
+
+// revise replaces paragraph at with a fresh one, as an edit between revisions does.
+func revise(paras []string, at int, seed int64) []string {
+	out := append([]string{}, paras...)
+	out[at] = prose(seed, 1)[0]
+	return out
+}
+
+// TestNearDuplicateDocumentsKeepTheNewest: revisions of one manual keep the newest.
+// An unrelated document, and two short stub pages that differ only in a line, are
+// left alone: stubs are too short to compare.
+func TestNearDuplicateDocumentsKeepTheNewest(t *testing.T) {
+	usePrivateConfig(t)
+	v1 := prose(1, 40)
+	v2 := revise(v1, 5, 2)
+	v3 := append(revise(v2, 20, 3), prose(4, 1)[0]) // one more edit, one paragraph added
+	stub := "home products support contact " + strings.Repeat("menu item ", 20)
+
+	src := tree(t, map[string]string{
+		"manual-v1.txt": strings.Join(v1, "\n\n"),
+		"manual-v2.txt": strings.Join(v2, "\n\n"),
+		"manual-v3.txt": strings.Join(v3, "\n\n"),
+		"other.txt":     strings.Join(prose(9, 40), "\n\n"),
+		"stub-a.txt":    stub + "page a",
+		"stub-b.txt":    stub + "page b",
+	})
+	for i, name := range []string{"manual-v1.txt", "manual-v2.txt", "manual-v3.txt"} {
+		when := time.Date(2020+i, 1, 1, 0, 0, 0, 0, time.Local)
+		os.Chtimes(filepath.Join(src, name), when, when)
+	}
+	target := filepath.Join(filepath.Dir(src), "Out")
+	h := &fakeHooks{}
+	if _, err := Run(job.Job{Sources: []string{src}, Target: target, Duplicates: []string{job.Documents}}, h, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(listTarget(t, target), ","); got != "manual-v3.txt,other.txt,stub-a.txt,stub-b.txt" {
+		t.Errorf("target holds %s", got)
+	}
+	if h.lastSeen == nil || len(h.lastSeen.Sets) != 1 || h.lastSeen.Sets[0].Score < docThreshold {
+		t.Fatalf("found %+v", h.lastSeen)
+	}
+}
+
+// TestDistantRevisionsAreNotChained: v1 matches v2 and v2 matches v3, but v1 and
+// v3 share too little. Keeping v3 must not skip v1 on v2's account: a third of
+// v1's text is in neither of the files kept.
+func TestDistantRevisionsAreNotChained(t *testing.T) {
+	usePrivateConfig(t)
+	v1 := prose(1, 12)
+	v2 := revise(v1, 3, 2)
+	v3 := revise(revise(v2, 7, 3), 10, 4)
+	src := tree(t, map[string]string{
+		"v1.txt": strings.Join(v1, "\n\n"),
+		"v2.txt": strings.Join(v2, "\n\n"),
+		"v3.txt": strings.Join(v3, "\n\n"),
+	})
+	for i, name := range []string{"v1.txt", "v2.txt", "v3.txt"} {
+		when := time.Date(2020+i, 1, 1, 0, 0, 0, 0, time.Local)
+		os.Chtimes(filepath.Join(src, name), when, when)
+	}
+	target := filepath.Join(filepath.Dir(src), "Out")
+	if _, err := Run(job.Job{Sources: []string{src}, Target: target, Duplicates: []string{job.Documents}}, &fakeHooks{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := listTarget(t, target)
+	if !strings.Contains(strings.Join(got, ","), "v1.txt") || !strings.Contains(strings.Join(got, ","), "v3.txt") {
+		t.Errorf("target holds %v; v1 and v3 must both survive", got)
 	}
 }

@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"image"
+	"image/color"
 	"strings"
 	"testing"
 	"time"
@@ -262,5 +264,27 @@ func TestFinalFrameShowsEverythingDone(t *testing.T) {
 	m.Update(doneMsg(flatten.Result{Outcomes: []flatten.Outcome{flatten.Cloned, flatten.Copied, flatten.Existing}, ClonedBytes: 100}))
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "100%") || !strings.Contains(v, "3/3") {
 		t.Errorf("final frame:\n%s", v)
+	}
+}
+
+// TestOrientedTurnsWithoutCopying: a portrait stored sideways (orientation 6) must
+// read upright through the wrapper: its bounds swap, and its top-left pixel is the
+// stored image's bottom-left.
+func TestOrientedTurnsWithoutCopying(t *testing.T) {
+	stored := image.NewRGBA(image.Rect(0, 0, 4, 2)) // 4 wide, 2 tall
+	stored.Set(0, 1, color.RGBA{255, 0, 0, 255})    // bottom-left: red
+	stored.Set(3, 0, color.RGBA{0, 0, 255, 255})    // top-right: blue
+	up := oriented{stored, 6}
+	if b := up.Bounds(); b.Dx() != 2 || b.Dy() != 4 {
+		t.Fatalf("bounds %v, want 2x4", b)
+	}
+	if r, _, _, _ := up.At(0, 0).RGBA(); r != 0xffff {
+		t.Error("orientation 6: the top-left should be the stored bottom-left")
+	}
+	if _, _, b, _ := up.At(1, 3).RGBA(); b != 0xffff {
+		t.Error("orientation 6: the bottom-right should be the stored top-right")
+	}
+	if same := (oriented{stored, 1}); same.Bounds().Dx() != 4 || same.At(3, 0) != stored.At(3, 0) {
+		t.Error("orientation 1 must change nothing")
 	}
 }

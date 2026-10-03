@@ -647,7 +647,7 @@ func inspectCommand(args []string, out, errOut io.Writer) int {
 	return 0
 }
 
-// reviewHook returns the duplicate review screen, or nil while it is not built in.
+// reviewHook returns the duplicate review screen.
 func reviewHook() func(f *engine.Found, sets []engine.DupSet) ([]engine.DupSet, error) {
-	return nil
+	return ui.Review
 }

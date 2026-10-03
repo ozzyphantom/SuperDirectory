@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,42 +131,51 @@ func (u *Interactive) Duplicates(f *engine.Found) ([]engine.DupSet, error) {
 	}
 	options = append(options, huh.NewOption("Copy everything", "none"), huh.NewOption("Cancel", "cancel"))
 
-	var choice string
-	if err := wizard.Menu(huh.NewSelect[string]().Title(title).Description(desc).Options(options...).Value(&choice), false); err != nil {
-		return nil, engine.ErrAbandoned
-	}
-	switch choice {
-	case "all":
-		return f.Sets, nil
-	case "none":
-		return nil, nil
-	case "review":
-		return u.Review(f, f.Sets)
-	case "choose":
-		var picked []string
-		var opts []huh.Option[string]
-		for _, k := range kinds {
-			n, b := f.Count(k)
-			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%d, %s)", kindLabel(k), n, HumanBytes(b)), k).Selected(true))
-		}
-		if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
-			Title("Skip which kinds?").Description("Space toggles. Enter confirms.").
-			Options(opts...).Value(&picked))).WithTheme(wizard.Theme()).Run(); err != nil {
+	for {
+		var choice string
+		if err := wizard.Menu(huh.NewSelect[string]().Title(title).Description(desc).Options(options...).Value(&choice), false); err != nil {
 			return nil, engine.ErrAbandoned
 		}
-		keep := map[string]bool{}
-		for _, k := range picked {
-			keep[k] = true
-		}
-		var out []engine.DupSet
-		for _, s := range f.Sets {
-			if keep[s.Kind] {
-				out = append(out, s)
+		switch choice {
+		case "all":
+			return f.Sets, nil
+		case "none":
+			return nil, nil
+		case "review":
+			sets, err := u.Review(f, f.Sets)
+			if errors.Is(err, ErrReviewBack) {
+				continue // esc in the review returns to this prompt
 			}
+			return sets, err
+		case "choose":
+			return u.chooseKinds(f, kinds)
 		}
-		return out, nil
+		return nil, engine.ErrAbandoned
 	}
-	return nil, engine.ErrAbandoned
+}
+
+// chooseKinds asks which kinds of duplicate to skip, all ticked to start.
+func (u *Interactive) chooseKinds(f *engine.Found, kinds []string) ([]engine.DupSet, error) {
+	var picked []string
+	var opts []huh.Option[string]
+	for _, k := range kinds {
+		n, b := f.Count(k)
+		opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%d, %s)", kindLabel(k), n, HumanBytes(b)), k).Selected(true))
+	}
+	if err := wizard.Form(false, huh.NewMultiSelect[string]().Title("Skip which kinds?").Options(opts...).Value(&picked)); err != nil {
+		return nil, engine.ErrAbandoned
+	}
+	keep := map[string]bool{}
+	for _, k := range picked {
+		keep[k] = true
+	}
+	var out []engine.DupSet
+	for _, s := range f.Sets {
+		if keep[s.Kind] {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 func kindLabel(k string) string {
