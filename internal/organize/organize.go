@@ -52,7 +52,6 @@ type Options struct {
 // plan with flatten.Copy, which creates the folders on demand.
 func Plan(source string, excluded map[string]bool, opts Options) ([]flatten.Item, error) {
 	var items []flatten.Item
-	used := map[string]bool{}
 
 	err := flatten.Walk(source, excluded, func(path string, d os.DirEntry) {
 		name := d.Name()
@@ -64,14 +63,12 @@ func Plan(source string, excluded map[string]bool, opts Options) ([]flatten.Item
 				dir = filepath.Join(dir, rel)
 			}
 		}
-		items = append(items, flatten.Item{
-			Src: path,
-			Dst: flatten.Unique(used, filepath.Join(dir, name)),
-		})
+		items = append(items, flatten.Item{Src: path, Want: filepath.Join(dir, name)})
 	})
 	if err != nil {
 		return nil, err
 	}
+	flatten.Assign(items)
 	return items, nil
 }
 

@@ -361,6 +361,7 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 	switch choice {
 	case "skip":
 		out := dedup.Filter(items, res)
+		flatten.Assign(out) // survivors reclaim the plain names the skipped files held
 		fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf(
 			"Skipping %d duplicate(s), saving %s.", res.Files, humanBytes(res.Bytes))))
 		return out, finished
