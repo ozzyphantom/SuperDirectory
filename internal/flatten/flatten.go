@@ -171,6 +171,11 @@ type Progress struct {
 	// ExistingBytes their size: work done by an earlier run, not this one.
 	Existing      int
 	ExistingBytes int64
+
+	// ClonedBytes is the size of files cloned rather than copied. A clone
+	// finishes a file without moving its data, so it advances the bar but
+	// not the transfer rate.
+	ClonedBytes int64
 }
 
 // Rate returns the average throughput in bytes per second since the copy began,
@@ -267,6 +272,7 @@ type Result struct {
 
 	Copied, Cloned, Existing int
 	Bytes                    int64 // bytes written, including discarded partial files
+	ClonedBytes              int64 // size of the files cloned, which wrote no data
 
 	existingBytes int64
 }
@@ -343,6 +349,7 @@ func Execute(target string, items []Item, opts Options) Result {
 			Done: done, Total: total, Bytes: bytes,
 			Current: current, Elapsed: time.Since(start),
 			Existing: res.Existing, ExistingBytes: existingBytes,
+			ClonedBytes: res.ClonedBytes,
 		})
 	}
 
@@ -396,6 +403,7 @@ func Execute(target string, items []Item, opts Options) Result {
 		case job.cloned.Load():
 			res.Outcomes[i] = Cloned
 			res.Cloned++
+			res.ClonedBytes += it.Size
 		default:
 			res.Outcomes[i] = Copied
 			res.Copied++

@@ -467,7 +467,11 @@ func pick(items []flatten.Item, idx []int) []flatten.Item {
 // merge folds a retry pass into the full result: retried files take their new
 // outcome, and their earlier failures give way to whatever the retry reported.
 func merge(items []flatten.Item, res, again flatten.Result, idx []int) flatten.Result {
-	out := flatten.Result{Outcomes: append([]flatten.Outcome(nil), res.Outcomes...), Bytes: res.Bytes + again.Bytes}
+	out := flatten.Result{
+		Outcomes:    append([]flatten.Outcome(nil), res.Outcomes...),
+		Bytes:       res.Bytes + again.Bytes,
+		ClonedBytes: res.ClonedBytes + again.ClonedBytes,
+	}
 	retried := map[string]bool{}
 	for k, i := range idx {
 		out.Outcomes[i] = again.Outcomes[k]

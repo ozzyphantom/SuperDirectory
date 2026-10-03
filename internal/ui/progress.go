@@ -110,7 +110,7 @@ func (e *estimator) eta(p flatten.Progress, rate float64, totalBytes int64, acti
 		}
 		return active / time.Duration(p.Done) * time.Duration(p.Total-p.Done), etaRough
 	}
-	done := p.Bytes + p.ExistingBytes
+	done := p.Bytes + p.ExistingBytes + p.ClonedBytes
 	remaining := totalBytes - done
 	if remaining <= 0 {
 		return 0, etaHidden
@@ -166,7 +166,7 @@ func (f frame) fraction() float64 {
 		return 1
 	}
 	if f.totalBytes > 0 {
-		return math.Min(0.999, float64(f.p.Bytes+f.p.ExistingBytes)/float64(f.totalBytes))
+		return math.Min(0.999, float64(f.p.Bytes+f.p.ExistingBytes+f.p.ClonedBytes)/float64(f.totalBytes))
 	}
 	return float64(f.p.Done) / float64(f.p.Total)
 }
@@ -197,7 +197,7 @@ func progressLine(f frame, width int) string {
 		bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", l.bar-filled))
 		line := fmt.Sprintf("  [%s] %3d%%  %s/%s", bar, int(frac*100), thousands(p.Done), thousands(p.Total))
 		if l.bytes {
-			line += "  " + dim.Render(HumanBytes(p.Bytes+p.ExistingBytes))
+			line += "  " + dim.Render(HumanBytes(p.Bytes+p.ExistingBytes+p.ClonedBytes))
 		}
 		if l.rate {
 			if f.paused > 0 {

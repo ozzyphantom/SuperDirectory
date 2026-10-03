@@ -169,7 +169,7 @@ func (w *flow) layout() (step, error) {
 	choice := string(w.j.LayoutOrFlat())
 	err := Menu(huh.NewSelect[string]().
 		Title("How should the superdirectory be arranged?").
-		Description("Flat pools every file in one folder. By type sorts into "+strings.Join(organize.Categories(), ", ")+",\nand Other. By date taken sorts photos and videos into year/month folders.\nKeep top folders keeps the first levels of folders and flattens below them.").
+		Description("Flat pools every file in one folder.\nBy type sorts files into Documents, Images, Video and other categories.\nBy date taken sorts files into year/month folders.\nKeep top folders keeps the first levels and flattens below them.").
 		Options(
 			huh.NewOption("Flat — one folder, every file", string(job.Flat)),
 			huh.NewOption("By type — a folder per file type", string(job.ByType)),

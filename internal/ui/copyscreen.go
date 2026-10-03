@@ -42,7 +42,10 @@ type (
 )
 
 func newCopyScreen(run *engine.CopyRun, stop *Stopper) *copyScreen {
-	return &copyScreen{run: run, stop: stop, pause: &flatten.Pauser{}, started: time.Now(), width: termWidth() + 1}
+	return &copyScreen{
+		run: run, stop: stop, pause: &flatten.Pauser{}, started: time.Now(), width: termWidth() + 1,
+		p: flatten.Progress{Total: run.Files},
+	}
 }
 
 func tick() tea.Cmd {
@@ -81,7 +84,8 @@ func (m *copyScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.result = flatten.Result(msg)
 		m.done = true
-		m.p.Done = m.p.Total - countNot(m.result.Outcomes, flatten.NotReached)
+		m.p.Done = countNot(m.result.Outcomes, flatten.NotReached)
+		m.p.ClonedBytes = m.result.ClonedBytes
 		m.refresh()
 		return m, tea.Quit
 	case tickMsg:

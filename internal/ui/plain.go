@@ -190,8 +190,15 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 	if secs := s.Elapsed.Seconds(); secs > 0 {
 		rate = float64(r.Bytes) / secs
 	}
-	fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s average\n", green.Render(bold.Render("Finished!")),
-		bold.Render(HumanBytes(r.Bytes)), humanDuration(s.Elapsed), bold.Render(humanRate(rate)))
+	switch {
+	case r.Copied == 0 && r.Cloned > 0:
+		// Clones on one volume move no data; a rate would be a fiction.
+		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s\n", green.Render(bold.Render("Finished!")),
+			bold.Render(HumanBytes(r.ClonedBytes)), humanDuration(s.Elapsed), dim.Render("cloned on the same volume, no data copied"))
+	default:
+		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s average\n", green.Render(bold.Render("Finished!")),
+			bold.Render(HumanBytes(r.Bytes+r.ClonedBytes)), humanDuration(s.Elapsed), bold.Render(humanRate(rate)))
+	}
 
 	var parts []string
 	if r.Copied > 0 {
@@ -204,7 +211,7 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 		parts = append(parts, thousands(r.Existing)+" already there")
 	}
 	if n := skippedFiles(s); n > 0 {
-		parts = append(parts, thousands(n)+" duplicates skipped")
+		parts = append(parts, count(n, "duplicate")+" skipped")
 	}
 	if s.Merged > 0 {
 		parts = append(parts, thousands(s.Merged)+" merged")

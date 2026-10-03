@@ -234,3 +234,33 @@ func TestSummaryWording(t *testing.T) {
 		}
 	}
 }
+
+// TestCloneOnlySummaryClaimsNoRate: a copy made of clones moved no data; it must
+// not report a transfer rate, and must count the cloned size as done.
+func TestCloneOnlySummaryClaimsNoRate(t *testing.T) {
+	var b bytes.Buffer
+	PrintSummary(&b, engine.Summary{
+		Job: job.Job{Target: "/t"}, Planned: 1504, Elapsed: time.Second,
+		Result:  flatten.Result{Cloned: 1504, ClonedBytes: 185_100_000},
+		Skipped: []engine.DupSet{{Skip: []int{1}}},
+	})
+	out := ansi.Strip(b.String())
+	for _, want := range []string{"185.1 MB", "cloned on the same volume", "1 duplicate skipped"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "MB/s") {
+		t.Errorf("a clone-only run claimed a rate:\n%s", out)
+	}
+}
+
+// TestFinalFrameShowsEverythingDone: when the copy reports done, the last frame
+// reads 100% with every file counted, cloned files included.
+func TestFinalFrameShowsEverythingDone(t *testing.T) {
+	m := newCopyScreen(&engine.CopyRun{Target: "/t", Files: 3, Bytes: 300}, NewStopper())
+	m.Update(doneMsg(flatten.Result{Outcomes: []flatten.Outcome{flatten.Cloned, flatten.Copied, flatten.Existing}, ClonedBytes: 100}))
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "100%") || !strings.Contains(v, "3/3") {
+		t.Errorf("final frame:\n%s", v)
+	}
+}
