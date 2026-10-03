@@ -76,7 +76,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 
 ## Requirements
 
-Go 1.25 or newer — **only to build**. The resulting binary has no runtime dependencies.
+Go 1.26 or newer — **only to build**. The resulting binary has no runtime dependencies. An older `go` downloads a supported toolchain on its own; `go.mod` pins the one releases are built with.
 
 ## Installation
 
