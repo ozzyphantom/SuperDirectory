@@ -27,9 +27,11 @@ type Interactive struct {
 	// user left them.
 	Review func(f *engine.Found, sets []engine.DupSet) ([]engine.DupSet, error)
 
-	pending  bool // a status line is drawn with \r and not yet ended
-	lastDraw time.Time
-	forced   bool
+	pending   bool // a status line is drawn with \r and not yet ended
+	lastDraw  time.Time
+	forced    bool
+	lastStage engine.Stage
+	staged    bool
 }
 
 var _ engine.Hooks = (*Interactive)(nil)
@@ -58,6 +60,10 @@ func (u *Interactive) endStatus() {
 
 func (u *Interactive) Stage(s engine.Stage) {
 	u.endStatus()
+	if u.staged && s == u.lastStage {
+		return // one line per stage, however many scans it runs
+	}
+	u.staged, u.lastStage = true, s
 	switch s {
 	case engine.Measuring:
 		fmt.Println("  " + dim.Render("Measuring files…"))
@@ -131,9 +137,12 @@ func (u *Interactive) Duplicates(f *engine.Found) ([]engine.DupSet, error) {
 	}
 	options = append(options, huh.NewOption("Copy everything", "none"), huh.NewOption("Cancel", "cancel"))
 
+	review := f.Review && u.Review != nil // asked for in the wizard: open it straight away
 	for {
 		var choice string
-		if err := wizard.Menu(huh.NewSelect[string]().Title(title).Description(desc).Options(options...).Value(&choice), false); err != nil {
+		if review {
+			choice, review = "review", false
+		} else if err := wizard.Menu(huh.NewSelect[string]().Title(title).Description(desc).Options(options...).Value(&choice), false); err != nil {
 			return nil, engine.ErrAbandoned
 		}
 		switch choice {

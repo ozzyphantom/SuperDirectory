@@ -93,6 +93,7 @@ type Found struct {
 	Sets       []DupSet           // every set, of every kind
 	Dims       map[int]dedup.Dims // displayed size of pictures in a set, by plan index
 	Unreadable []string           // files a scan could not read; they are copied
+	Review     bool               // the job asked to review the sets before skipping
 }
 
 // Count totals the files and bytes the sets of one kind would skip.
@@ -282,7 +283,7 @@ func (r *run) plan() ([]flatten.Item, error) {
 // duplicates runs the scans the job asks for, each over what the one before left,
 // then lets the front end decide.
 func (r *run) duplicates(items []flatten.Item) ([]flatten.Item, error) {
-	found := &Found{Items: items, Dims: map[int]dedup.Dims{}}
+	found := &Found{Items: items, Dims: map[int]dedup.Dims{}, Review: r.j.Review}
 	opts := dedup.Options{StallTimeout: flatten.DefaultStallTimeout, Cancel: r.stop, OnProgress: r.h.Scan}
 
 	if r.j.Finds(job.Identical) {

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -102,8 +103,12 @@ func (u *Plain) Scan(p dedup.Progress) {
 func (u *Plain) Duplicates(f *engine.Found) ([]engine.DupSet, error) {
 	title, _, _ := describeFound(f)
 	u.line("superdirectory: " + strings.TrimPrefix(title, "Found "))
-	if u.Review != nil {
-		return u.Review(f, f.Sets)
+	if u.Review != nil && f.Review {
+		sets, err := u.Review(f, f.Sets)
+		if errors.Is(err, ErrReviewBack) {
+			return nil, engine.ErrAbandoned
+		}
+		return sets, err
 	}
 	return f.Sets, nil
 }
