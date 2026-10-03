@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/exif"
 )
 
 // StallError reports a file abandoned for delivering no data.
@@ -39,7 +41,7 @@ type reader struct {
 // as flatten.Copy. A read parked in a disk retry cannot be cancelled; it can only
 // be walked away from. fn must therefore hand everything back through its return
 // values and touch no shared state: an abandoned fn may still finish later.
-func guarded[T any](r reader, path string, fn func(f io.ReadSeeker) (T, error)) (T, error) {
+func guarded[T any](r reader, path string, fn func(f exif.File) (T, error)) (T, error) {
 	var zero T
 	if closed(r.cancel) {
 		return zero, errCanceled // stopped before this file began; do not open it
@@ -139,10 +141,16 @@ func (c *countingFile) Seek(offset int64, whence int) (int64, error) {
 	return c.f.Seek(offset, whence)
 }
 
+func (c *countingFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.f.ReadAt(p, off)
+	c.n.Add(int64(n))
+	return n, err
+}
+
 // hash returns the SHA-256 of the file, or of its first limit bytes when limit is
 // not negative.
 func (r reader) hash(path string, limit int64) (string, error) {
-	return guarded(r, path, func(f io.ReadSeeker) (string, error) {
+	return guarded(r, path, func(f exif.File) (string, error) {
 		var src io.Reader = f
 		if limit >= 0 {
 			src = io.LimitReader(f, limit)
