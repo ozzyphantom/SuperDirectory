@@ -286,7 +286,7 @@ func askDestination(source, prevTarget string) (string, error) {
 	// Default to saving alongside the source. If the user already chose a
 	// target and stepped back, reopen where they left off instead of resetting.
 	start := filepath.Dir(source)
-	nameDefault := safeBase(source) + "-super"
+	nameDefault := freeName(start, safeBase(source)+"-super")
 	if prevTarget != "" {
 		start = filepath.Dir(prevTarget)
 		nameDefault = filepath.Base(prevTarget)
@@ -307,7 +307,7 @@ func askDestination(source, prevTarget string) (string, error) {
 			if overlaps(target, source) {
 				return errors.New("that sits inside the source folder; pick another spot")
 			}
-			return nil
+			return checkTarget(target)
 		},
 	})
 	if errors.Is(err, pick.ErrBack) {
@@ -479,6 +479,48 @@ func topLevelSubdirCount(source string) int {
 		}
 	}
 	return n
+}
+
+// checkTarget refuses a destination that already holds files. The screen promises
+// a new folder ("Name the new folder", "Creates …"). Copying into a populated one
+// would replace, without a word, every file there that shares a name with one in the
+// plan. An empty folder is fine, and so is one holding only filesystem bookkeeping
+// such as .DS_Store.
+func checkTarget(target string) error {
+	info, err := os.Stat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("a file already has that name here; choose another name")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !fsmeta.IsMetadata(e.Name()) {
+			return errors.New("that folder already exists and is not empty; choose another name")
+		}
+	}
+	return nil
+}
+
+// freeName returns base, or base-2, base-3, … — the first that checkTarget accepts
+// inside dir. Running the same source twice then offers "photos-super-2" rather
+// than a name that is refused on enter.
+func freeName(dir, base string) string {
+	name := base
+	for i := 2; i < 1000; i++ {
+		if checkTarget(filepath.Join(dir, name)) == nil {
+			return name
+		}
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	return base // give up suggesting; the check on enter still applies
 }
 
 func home() string {
