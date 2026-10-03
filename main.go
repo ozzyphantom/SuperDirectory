@@ -28,6 +28,8 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/extract"
@@ -270,8 +272,9 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 			} else {
 				lastDraw = now
 			}
-			fmt.Printf("\r  %s\033[K", dim.Render(fmt.Sprintf(
-				"hashing %d/%d candidates  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))))
+			line := "  " + dim.Render(fmt.Sprintf(
+				"hashing %d/%d candidates  %s", p.Done, p.Total, truncateMiddle(p.Current, 28)))
+			fmt.Printf("\r%s\033[K", ansi.Truncate(line, termWidth(), "…"))
 		},
 	})
 	fmt.Print("\r\033[K")
@@ -463,38 +466,109 @@ func (d *progressDrawer) draw(p flatten.Progress) {
 
 	// Erase to end of line: the text shrinks as the ETA and filename do, and
 	// leftovers from a longer previous frame would otherwise linger.
-	fmt.Print("\r" + progressLine(p, rate, stalled) + "\033[K")
+	fmt.Print("\r" + progressLine(p, rate, stalled, termWidth()) + "\033[K")
 	if final {
 		fmt.Println()
 	}
 }
 
-// progressLine builds the progress display. Split from the drawer so it can be
-// tested without capturing stdout.
+// termWidth is the usable width of the terminal: one column short of the edge, so a
+// full line never leaves the cursor in the wrap position. 79 when it cannot tell.
+func termWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w <= 1 {
+		return 79
+	}
+	return w - 1
+}
+
+// progressLine builds the progress display, fitted to width columns. Split from the
+// drawer so it can be tested without capturing stdout.
 //
 // The bar tracks files, not bytes: knowing the total byte count in advance would
 // cost an lstat per file before the copy began — measured at 43x the cost of the
 // walk itself on exFAT — a poor trade on the very drives where progress matters.
-func progressLine(p flatten.Progress, rate float64, stalled time.Duration) string {
-	const width = 30
-	filled := width * p.Done / p.Total
-	bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
-
-	line := fmt.Sprintf("  [%s] %3d%%  %d/%d  %s  %s",
-		bar, p.Done*100/p.Total, p.Done, p.Total,
-		dim.Render(humanBytes(p.Bytes)), bold.Render(humanRate(rate)))
-
-	if stalled >= stallAfter {
-		// Say it loudly, and say what it is stuck on. This is the difference
-		// between "the app hung" and "this one file will not read".
-		line += red.Render(fmt.Sprintf("  ⚠ no data for %s", humanDuration(stalled)))
-	} else if eta, ok := estimateRemaining(p); ok {
-		line += dim.Render("  ~" + humanDuration(eta) + " left")
+//
+// Fitting matters because the drawer redraws in place with a carriage return. A line
+// wider than the terminal wraps, the return lands on the wrapped half, and every
+// frame strands a stale copy of the bar above it — hundreds over a long copy in a
+// default 80-column window. So the line degrades in order: the bar shrinks first
+// (the percentage beside it carries the same information), then the least useful
+// parts go. A stall keeps its warning and the name of the file it is stuck on to
+// the last, because those are the whole message.
+func progressLine(p flatten.Progress, rate float64, stalled time.Duration, width int) string {
+	if p.Total <= 0 {
+		return ""
 	}
+	isStalled := stalled >= stallAfter
+	eta, hasETA := estimateRemaining(p)
+	name := ""
 	if p.Current != "" && p.Done < p.Total {
-		line += "  " + dim.Render(truncateMiddle(p.Current, 28))
+		name = p.Current
 	}
-	return line
+
+	render := func(l lineLayout) string {
+		filled := l.bar * p.Done / p.Total
+		bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", l.bar-filled))
+		line := fmt.Sprintf("  [%s] %3d%%  %d/%d", bar, p.Done*100/p.Total, p.Done, p.Total)
+		if l.bytes {
+			line += "  " + dim.Render(humanBytes(p.Bytes))
+		}
+		if l.rate {
+			line += "  " + bold.Render(humanRate(rate))
+		}
+		if isStalled {
+			// Say it loudly, and say what it is stuck on. This is the difference
+			// between "the app hung" and "this one file will not read".
+			line += red.Render(fmt.Sprintf("  ⚠ no data for %s", humanDuration(stalled)))
+		} else if l.eta && hasETA {
+			line += dim.Render("  ~" + humanDuration(eta) + " left")
+		}
+		if l.name > 0 && name != "" {
+			line += "  " + dim.Render(truncateMiddle(name, l.name))
+		}
+		return line
+	}
+
+	for _, l := range progressLayouts(isStalled) {
+		if line := render(l); ansi.StringWidth(line) <= width {
+			return line
+		}
+	}
+	return ansi.Truncate(render(lineLayout{bar: 5}), width, "")
+}
+
+// lineLayout is one way to draw the progress line: how many bar cells, how many
+// runes of the file name (0 hides it), and which optional parts to show.
+type lineLayout struct {
+	bar, name        int
+	eta, bytes, rate bool
+}
+
+// progressLayouts lists the ways to draw the line, from the full display to the
+// barest, in the order they are tried.
+func progressLayouts(stalled bool) []lineLayout {
+	var out []lineLayout
+	for bar := 30; bar >= 12; bar -= 6 {
+		out = append(out, lineLayout{bar: bar, name: 28, eta: true, bytes: true, rate: true})
+	}
+	if stalled {
+		// The rate and byte count are frozen anyway; the file name is the message.
+		out = append(out,
+			lineLayout{bar: 12, name: 28, rate: true},
+			lineLayout{bar: 12, name: 28},
+			lineLayout{bar: 12, name: 16},
+			lineLayout{bar: 5, name: 12},
+		)
+		return out
+	}
+	return append(out,
+		lineLayout{bar: 12, name: 16, eta: true, bytes: true, rate: true},
+		lineLayout{bar: 12, eta: true, bytes: true, rate: true},
+		lineLayout{bar: 12, eta: true, rate: true},
+		lineLayout{bar: 12, rate: true},
+		lineLayout{bar: 5},
+	)
 }
 
 // truncateMiddle shortens a filename while keeping its extension visible, because

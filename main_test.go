@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 )
 
@@ -118,9 +120,12 @@ func TestRateMeterIgnoresBursts(t *testing.T) {
 	}
 }
 
+// wide is a terminal with room for every part of the progress line.
+const wide = 200
+
 func TestProgressLineShowsThroughput(t *testing.T) {
 	p := flatten.Progress{Done: 105, Total: 250, Bytes: 1_900_000_000, Elapsed: 30 * time.Second}
-	line := progressLine(p, 58_300_000, 0)
+	line := progressLine(p, 58_300_000, 0, wide)
 
 	for _, want := range []string{"42%", "105/250", "1.9 GB", "58.3 MB/s", "left"} {
 		if !strings.Contains(line, want) {
@@ -128,7 +133,7 @@ func TestProgressLineShowsThroughput(t *testing.T) {
 		}
 	}
 	// The bar must never overflow when a copy completes.
-	done := progressLine(flatten.Progress{Done: 7, Total: 7, Bytes: 100, Elapsed: time.Second}, 100, 0)
+	done := progressLine(flatten.Progress{Done: 7, Total: 7, Bytes: 100, Elapsed: time.Second}, 100, 0, wide)
 	if !strings.Contains(done, "100%") {
 		t.Errorf("completed line should read 100%%:\n%s", done)
 	}
@@ -162,7 +167,7 @@ func TestRateMeterDetectsAStall(t *testing.T) {
 func TestProgressLineNamesTheStuckFile(t *testing.T) {
 	p := flatten.Progress{Done: 1084, Total: 11041, Bytes: 1_200_000_000, Current: "DSC_4417.NEF", Elapsed: time.Minute}
 
-	running := progressLine(p, 38_000_000, 0)
+	running := progressLine(p, 38_000_000, 0, wide)
 	if !strings.Contains(running, "DSC_4417.NEF") {
 		t.Errorf("running line should name the file in flight:\n%s", running)
 	}
@@ -170,7 +175,7 @@ func TestProgressLineNamesTheStuckFile(t *testing.T) {
 		t.Errorf("running line should show an ETA:\n%s", running)
 	}
 
-	stuck := progressLine(p, 38_000_000, 47*time.Second)
+	stuck := progressLine(p, 38_000_000, 47*time.Second, wide)
 	if !strings.Contains(stuck, "DSC_4417.NEF") {
 		t.Errorf("stalled line must still name the file:\n%s", stuck)
 	}
@@ -198,5 +203,40 @@ func TestTruncateMiddle(t *testing.T) {
 	}
 	if !strings.Contains(got, "…") {
 		t.Errorf("no ellipsis: %q", got)
+	}
+}
+
+// TestProgressLineFitsTheTerminal is the fix for a copy that filled an 80-column
+// window with stale progress bars: a line wider than the terminal wraps, and the
+// carriage return redraws only the wrapped half.
+func TestProgressLineFitsTheTerminal(t *testing.T) {
+	p := flatten.Progress{
+		Done: 1084, Total: 11041, Bytes: 1_200_000_000, Elapsed: time.Minute,
+		Current: "IMG_2019_summer_vacation_with_family_at_the_lake_house_1084.jpg",
+	}
+	for _, width := range []int{20, 40, 59, 79, 99, 139} {
+		for _, stalled := range []time.Duration{0, 47 * time.Second} {
+			line := progressLine(p, 38_000_000, stalled, width)
+			if got := ansi.StringWidth(line); got > width {
+				t.Errorf("width %d, stalled %v: line is %d columns:\n%s", width, stalled, got, line)
+			}
+		}
+	}
+
+	// At the default 80 columns a healthy copy keeps its rate and ETA by shrinking
+	// the bar, rather than dropping the numbers.
+	line := progressLine(p, 38_000_000, 0, 79)
+	for _, want := range []string{"1084/11041", "MB/s", "left"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("80 columns: missing %q:\n%s", want, line)
+		}
+	}
+
+	// A stall keeps its warning and the stuck file's name to the last.
+	stuck := progressLine(p, 38_000_000, 47*time.Second, 59)
+	for _, want := range []string{"no data for 47s", "IMG_"} {
+		if !strings.Contains(stuck, want) {
+			t.Errorf("60 columns, stalled: missing %q:\n%s", want, stuck)
+		}
 	}
 }
