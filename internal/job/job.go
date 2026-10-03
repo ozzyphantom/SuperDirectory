@@ -185,6 +185,17 @@ func (j *Job) Validate() error {
 	return nil
 }
 
+// ValidateDates checks only the date fields, for a form that asks for them alone.
+func (j *Job) ValidateDates() error {
+	if _, err := parseDay(j.Since); err != nil {
+		return fmt.Errorf("%q is not a date like 2024-03-31", j.Since)
+	}
+	if _, err := parseDay(j.Until); err != nil {
+		return fmt.Errorf("%q is not a date like 2024-03-31", j.Until)
+	}
+	return nil
+}
+
 // Overlaps reports whether a and b are the same folder or one contains the other.
 // The comparison ignores case: on macOS and Windows two paths that differ only in
 // case name one folder, and treating them as distinct would let a copy write into

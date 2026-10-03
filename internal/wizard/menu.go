@@ -21,9 +21,17 @@ import (
 // filter — a text box behind a stray keypress, on a list of three choices — and
 // draws the same key hints as the pickers, so every screen reads alike.
 func Menu(sel *huh.Select[string], back bool) error {
+	return Form(back, sel)
+}
+
+// Form runs any one-screen form — a checklist, a few text fields — the way Menu
+// runs a select: the app's theme, esc stepping back when back is set, and key
+// hints that match the fields on screen.
+func Form(back bool, fields ...huh.Field) error {
 	keys := huh.NewDefaultKeyMap()
 	keys.Select.Filter.SetEnabled(false)
-	form := huh.NewForm(huh.NewGroup(sel)).
+	keys.MultiSelect.Filter.SetEnabled(false)
+	form := huh.NewForm(huh.NewGroup(fields...)).
 		WithTheme(Theme()).
 		WithKeyMap(keys).
 		WithShowHelp(false)
@@ -31,7 +39,7 @@ func Menu(sel *huh.Select[string], back bool) error {
 	form.SubmitCmd = tea.Quit
 	form.CancelCmd = tea.Interrupt
 
-	m := &menu{form: form, back: back}
+	m := &menu{form: form, back: back, hints: hintsFor(fields, back)}
 	final, err := tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	switch {
 	case errors.Is(err, tea.ErrInterrupted):
@@ -49,12 +57,41 @@ func Menu(sel *huh.Select[string], back bool) error {
 	return nil
 }
 
+// hintsFor names the keys the fields on screen answer to.
+func hintsFor(fields []huh.Field, back bool) []hint.Pair {
+	var pairs []hint.Pair
+	inputs, toggles := 0, false
+	for _, f := range fields {
+		switch f.(type) {
+		case *huh.Input:
+			inputs++
+		case *huh.MultiSelect[string]:
+			toggles = true
+		}
+	}
+	switch {
+	case inputs > 0 && len(fields) > 1:
+		pairs = []hint.Pair{{Key: "tab", Action: "next field"}, {Key: "shift+tab", Action: "previous"}, {Key: "enter", Action: "confirm"}}
+	case inputs > 0:
+		pairs = []hint.Pair{{Key: "type", Action: "a value"}, {Key: "enter", Action: "confirm"}}
+	case toggles:
+		pairs = []hint.Pair{{Key: "↑↓", Action: "move"}, {Key: "space", Action: "toggle"}, {Key: "enter", Action: "confirm"}}
+	default:
+		pairs = []hint.Pair{{Key: "↑↓", Action: "move"}, {Key: "enter", Action: "select"}}
+	}
+	if back {
+		pairs = append(pairs, hint.Pair{Key: "esc", Action: "back"})
+	}
+	return append(pairs, hint.Pair{Key: "ctrl+c", Action: "quit"})
+}
+
 // menu wraps a huh form to give esc a meaning.
 type menu struct {
 	form     *huh.Form
 	back     bool
 	wentBack bool
 	width    int // terminal columns, for wrapping the key hints
+	hints    []hint.Pair
 }
 
 func (m *menu) Init() tea.Cmd { return m.form.Init() }
@@ -79,14 +116,5 @@ func (m *menu) View() string {
 	if m.wentBack || m.form.State != huh.StateNormal {
 		return ""
 	}
-	return m.form.View() + "\n\n" + hint.Block(menuHints(m.back), m.width) + "\n"
-}
-
-// menuHints are the keys a menu answers to, in the pickers' style.
-func menuHints(back bool) []hint.Pair {
-	pairs := []hint.Pair{{Key: "↑↓", Action: "move"}, {Key: "enter", Action: "select"}}
-	if back {
-		pairs = append(pairs, hint.Pair{Key: "esc", Action: "back"})
-	}
-	return append(pairs, hint.Pair{Key: "ctrl+c", Action: "quit"})
+	return m.form.View() + "\n\n" + hint.Block(m.hints, m.width) + "\n"
 }
