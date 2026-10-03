@@ -17,11 +17,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -48,12 +50,62 @@ var (
 	key    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 )
 
+// version is stamped at release: go build -ldflags "-X main.version=1.2.0".
+var version = "dev"
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "inspect" {
-		runInspect(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		os.Exit(command(os.Args[1:], os.Stdout, os.Stderr))
+	}
+	// The wizard draws on stdout and stderr and reads keys from stdin. Without a
+	// terminal on all three, every screen failed at once and the app reported a
+	// clean exit, having done nothing and said nothing.
+	for _, f := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
+		if !term.IsTerminal(f.Fd()) {
+			fmt.Fprintln(os.Stderr, "superdirectory: the wizard needs a terminal. Run it in one, or see --help.")
+			os.Exit(1)
+		}
 	}
 	os.Exit(run())
+}
+
+const usage = `SuperDirectory — flatten a nested tree, or sort it by file type.
+
+Usage:
+  superdirectory               start the interactive wizard (needs a terminal)
+  superdirectory inspect DIR   show the MIME type and title of each file in DIR
+  superdirectory --version     print the version
+  superdirectory --help        print this help
+`
+
+// command runs a non-interactive invocation and returns the exit code.
+func command(args []string, out, errOut io.Writer) int {
+	switch args[0] {
+	case "inspect":
+		runInspect(args[1:])
+		return 0
+	case "-h", "--help", "help":
+		fmt.Fprint(out, usage)
+		return 0
+	case "-v", "--version", "version":
+		fmt.Fprintln(out, "superdirectory", resolvedVersion())
+		return 0
+	default:
+		fmt.Fprintf(errOut, "superdirectory: unknown argument %q\n\n%s", args[0], usage)
+		return 2
+	}
+}
+
+// resolvedVersion is the stamped release version or, for a build from `go install
+// …@v1.2.0` or a git checkout, the module version Go recorded in the binary.
+func resolvedVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }
 
 // outcome is how one pass through the wizard and the copy ended.

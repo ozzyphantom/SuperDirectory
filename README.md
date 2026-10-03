@@ -111,6 +111,8 @@ There is one other command, useful for a quick look at what the content extracto
 go run . inspect <dir>   # non-interactive: pure-Go content inspection
 ```
 
+`--help` lists the commands and `--version` prints the version. Without a terminal, the wizard exits with status 1 and says so.
+
 The wizard walks you through seven steps. Two of them are skipped when they don't apply.
 
 1. **Mode** — flatten into one folder, or organize by file type

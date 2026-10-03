@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -256,5 +257,30 @@ func TestScanStatusShowsALongReadMoving(t *testing.T) {
 	small := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 1, Total: 4, Current: "a.jpg", Read: 4096, Size: 65536})
 	if strings.Contains(small, " of ") {
 		t.Errorf("a small read should not show a byte count: %q", small)
+	}
+}
+
+func TestCommandLine(t *testing.T) {
+	cases := []struct {
+		args     []string
+		code     int
+		out, err string
+	}{
+		{[]string{"--help"}, 0, "Usage:", ""},
+		{[]string{"-h"}, 0, "Usage:", ""},
+		{[]string{"--version"}, 0, "superdirectory ", ""},
+		{[]string{"--frobnicate"}, 2, "", "unknown argument"},
+	}
+	for _, c := range cases {
+		var out, errOut bytes.Buffer
+		if got := command(c.args, &out, &errOut); got != c.code {
+			t.Errorf("%v: exit %d, want %d", c.args, got, c.code)
+		}
+		if !strings.Contains(out.String(), c.out) {
+			t.Errorf("%v: stdout %q, want it to contain %q", c.args, out.String(), c.out)
+		}
+		if !strings.Contains(errOut.String(), c.err) {
+			t.Errorf("%v: stderr %q, want it to contain %q", c.args, errOut.String(), c.err)
+		}
 	}
 }
