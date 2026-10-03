@@ -27,6 +27,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/hint"
 )
 
 // ErrCanceled means the user quit outright (ctrl+c / q). ErrBack means they
@@ -40,7 +42,6 @@ var (
 	titleStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 	pathStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
-	keyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 	nameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#2ecc71")).Bold(true)
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#e74c3c"))
 	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -113,6 +114,7 @@ type model struct {
 	cursor  int
 	offset  int
 	height  int
+	width   int   // terminal columns; 0 until the first resize, meaning unknown
 	loadErr error // set when the current directory could not be read
 
 	// counts memoizes subfolder counts by absolute path, so re-entering a
@@ -143,7 +145,9 @@ func (m *model) Init() tea.Cmd { return m.countVisibleCmd() }
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.height = msg.Height - 10
+		m.width = msg.Width
+		// Nine fixed lines, plus the key hints, which wrap on a narrow window.
+		m.height = msg.Height - 9 - len(hint.Lines(browseHints, msg.Width))
 		if m.height < 3 {
 			m.height = 3
 		}
@@ -252,8 +256,8 @@ func (m *model) updateNaming(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) View() string {
 	var b strings.Builder
-	b.WriteString("\n  " + titleStyle.Render(m.opts.Title) + "\n")
-	b.WriteString("  " + dimStyle.Render("Location  ") + pathStyle.Render(m.dir) + "\n\n")
+	b.WriteString("\n  " + titleStyle.Render(hint.Fit(m.opts.Title, m.width-2)) + "\n")
+	b.WriteString("  " + dimStyle.Render("Location  ") + pathStyle.Render(hint.FitPath(m.dir, m.width-12)) + "\n\n")
 
 	switch {
 	case m.loadErr != nil:
@@ -281,7 +285,11 @@ func (m *model) View() string {
 		b.WriteString(m.renderNaming())
 	}
 
-	b.WriteString("\n  " + m.helpLine() + "\n")
+	hints := browseHints
+	if m.naming {
+		hints = namingHints
+	}
+	b.WriteString("\n" + hint.Block(hints, m.width) + "\n")
 	return b.String()
 }
 
@@ -304,39 +312,30 @@ func (m *model) renderNaming() string {
 	var b strings.Builder
 	b.WriteString("\n  " + titleStyle.Render("Name the new folder") + "\n")
 	b.WriteString("  " + nameStyle.Render(string(m.name)) + cursorStyle.Render("▏") + "\n")
-	b.WriteString("  " + dimStyle.Render("Creates  "+preview) + "\n")
+	b.WriteString("  " + dimStyle.Render("Creates  "+hint.FitPath(preview, m.width-11)) + "\n")
 	if m.errMsg != "" {
 		b.WriteString("  " + errStyle.Render("✗ "+m.errMsg) + "\n")
 	}
 	return b.String()
 }
 
-func (m *model) helpLine() string {
-	var pairs [][2]string
-	if m.naming {
-		pairs = [][2]string{
-			{"type", "a name"},
-			{"enter", "create"},
-			{"esc", "back"},
-			{"ctrl+c", "quit"},
-		}
-	} else {
-		pairs = [][2]string{
-			{"↑↓", "move"},
-			{"a–z", "jump"},
-			{"→", "open"},
-			{"←", "up"},
-			{"enter", "choose this folder"},
-			{"esc", "back"},
-			{"ctrl+c", "quit"},
-		}
+var (
+	browseHints = []hint.Pair{
+		{Key: "↑↓", Action: "move"},
+		{Key: "a–z", Action: "jump"},
+		{Key: "→", Action: "open"},
+		{Key: "←", Action: "up"},
+		{Key: "enter", Action: "choose this folder"},
+		{Key: "esc", Action: "back"},
+		{Key: "ctrl+c", Action: "quit"},
 	}
-	parts := make([]string, len(pairs))
-	for i, p := range pairs {
-		parts[i] = keyStyle.Render(p[0]) + " " + dimStyle.Render(p[1])
+	namingHints = []hint.Pair{
+		{Key: "type", Action: "a name"},
+		{Key: "enter", Action: "create"},
+		{Key: "esc", Action: "back"},
+		{Key: "ctrl+c", Action: "quit"},
 	}
-	return strings.Join(parts, dimStyle.Render("   "))
-}
+)
 
 // ── navigation ───────────────────────────────────────────────────────────
 

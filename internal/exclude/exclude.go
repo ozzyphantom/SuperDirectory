@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
+	"github.com/ozzyphantom/SuperDirectory/internal/hint"
 )
 
 // ErrCanceled is returned when the user quits the tree outright (q / Ctrl+C).
@@ -29,9 +30,8 @@ var (
 var (
 	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 	titleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
-	keyStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true) // keys in help
-	arrowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8"))            // expand arrows
-	excludedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))                // orange, matching the app
+	arrowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")) // expand arrows
+	excludedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))     // orange, matching the app
 	keptStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#2ecc71"))
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
@@ -143,6 +143,7 @@ type model struct {
 	cursor   int
 	offset   int // scroll offset into visible
 	height   int // rows available for the list
+	width    int // terminal columns; 0 until the first resize, meaning unknown
 	excluded map[string]bool
 	preview  *node
 	canceled bool
@@ -198,7 +199,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCounts(msg)
 		return m, nil
 	case tea.WindowSizeMsg:
-		m.height = msg.Height - 8
+		m.width = msg.Width
+		// Seven fixed lines, plus the key hints, which wrap on a narrow window.
+		m.height = msg.Height - 7 - len(hint.Lines(treeHints, msg.Width))
 		if m.height < 3 {
 			m.height = 3
 		}
@@ -246,7 +249,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) View() string {
 	var b strings.Builder
 	b.WriteString("\n  " + titleStyle.Render("Select directories to exclude") + "\n")
-	b.WriteString("  " + dimStyle.Render(m.source) + "\n\n")
+	b.WriteString("  " + dimStyle.Render(hint.FitPath(m.source, m.width-2)) + "\n\n")
 
 	if len(m.visible) == 0 {
 		b.WriteString("  " + dimStyle.Render("(no subdirectories)") + "\n")
@@ -269,28 +272,19 @@ func (m *model) View() string {
 	}
 
 	b.WriteString("\n  " + m.statusLine() + "\n")
-	b.WriteString("  " + helpLine() + "\n")
+	b.WriteString(hint.Block(treeHints, m.width) + "\n")
 	return b.String()
 }
 
-// helpLine renders the key hints with the keys in the accent color and the
-// action words dimmed, so the two read as distinct.
-func helpLine() string {
-	pairs := [][2]string{
-		{"↑↓", "move"},
-		{"→", "open"},
-		{"←", "collapse"},
-		{"space", "exclude"},
-		{"p", "preview"},
-		{"enter", "done"},
-		{"esc", "back"},
-		{"q", "quit"},
-	}
-	parts := make([]string, len(pairs))
-	for i, p := range pairs {
-		parts[i] = keyStyle.Render(p[0]) + " " + dimStyle.Render(p[1])
-	}
-	return strings.Join(parts, dimStyle.Render("   "))
+var treeHints = []hint.Pair{
+	{Key: "↑↓", Action: "move"},
+	{Key: "→", Action: "open"},
+	{Key: "←", Action: "collapse"},
+	{Key: "space", Action: "exclude"},
+	{Key: "p", Action: "preview"},
+	{Key: "enter", Action: "done"},
+	{Key: "esc", Action: "back"},
+	{Key: "q", Action: "quit"},
 }
 
 func (m *model) statusLine() string {

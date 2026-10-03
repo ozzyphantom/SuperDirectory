@@ -3,12 +3,12 @@ package wizard
 import (
 	"errors"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/hint"
 )
 
 // Menu runs a one-question select in the app's theme. With back set, esc steps back
@@ -54,11 +54,15 @@ type menu struct {
 	form     *huh.Form
 	back     bool
 	wentBack bool
+	width    int // terminal columns, for wrapping the key hints
 }
 
 func (m *menu) Init() tea.Cmd { return m.form.Init() }
 
 func (m *menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+	}
 	if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyEsc && m.back {
 		m.wentBack = true
 		return m, tea.Quit
@@ -75,25 +79,14 @@ func (m *menu) View() string {
 	if m.wentBack || m.form.State != huh.StateNormal {
 		return ""
 	}
-	return m.form.View() + "\n\n" + menuHelp(m.back) + "\n"
+	return m.form.View() + "\n\n" + hint.Block(menuHints(m.back), m.width) + "\n"
 }
 
-var (
-	helpKey  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
-	helpDesc = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-)
-
-// menuHelp renders the key hints in the pickers' style: keys in the accent color,
-// actions dimmed.
-func menuHelp(back bool) string {
-	pairs := [][2]string{{"↑↓", "move"}, {"enter", "select"}}
+// menuHints are the keys a menu answers to, in the pickers' style.
+func menuHints(back bool) []hint.Pair {
+	pairs := []hint.Pair{{Key: "↑↓", Action: "move"}, {Key: "enter", Action: "select"}}
 	if back {
-		pairs = append(pairs, [2]string{"esc", "back"})
+		pairs = append(pairs, hint.Pair{Key: "esc", Action: "back"})
 	}
-	pairs = append(pairs, [2]string{"ctrl+c", "quit"})
-	parts := make([]string, len(pairs))
-	for i, p := range pairs {
-		parts[i] = helpKey.Render(p[0]) + " " + helpDesc.Render(p[1])
-	}
-	return "  " + strings.Join(parts, helpDesc.Render("   "))
+	return append(pairs, hint.Pair{Key: "ctrl+c", Action: "quit"})
 }
