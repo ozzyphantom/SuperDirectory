@@ -13,6 +13,7 @@ import (
 
 	"github.com/ozzyphantom/SuperDirectory/internal/exif"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // exifBlock builds the TIFF structure of an EXIF segment: an orientation in IFD0,
@@ -289,7 +290,7 @@ func TestFindSimilarHEIC(t *testing.T) {
 	}
 	os.Remove(src)
 
-	if h, err := guarded(reader{}, heic, func(f exif.File) (exif.Info, error) { return exif.HEIC(f) }); err != nil || h.Width != 1200 || h.Height != 800 {
+	if h, err := guard.Read(guard.Reader{}, heic, func(f exif.File) (exif.Info, error) { return exif.HEIC(f) }); err != nil || h.Width != 1200 || h.Height != 800 {
 		t.Fatalf("HEIC header = %+v, %v; want 1200x800", h, err)
 	}
 

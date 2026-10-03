@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/exif"
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // sipsPath is macOS's built-in image tool, which decodes HEIC. It is empty on every
@@ -49,7 +50,7 @@ func heicPrint(path, tmpDir string, id int, cancel <-chan struct{}, limit time.D
 	}()
 	if err := exec.CommandContext(ctx, sipsPath, "-s", "format", "jpeg", "-Z", "256", path, "--out", out).Run(); err != nil {
 		if closed(cancel) {
-			return nil, errCanceled
+			return nil, guard.ErrCanceled
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("sips gave no answer in %s", limit)

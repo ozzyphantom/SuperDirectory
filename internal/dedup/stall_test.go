@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // TestHashStallIsAbandoned. The drive that motivated the duplicate finder also had an
@@ -37,13 +39,13 @@ func TestHashStallIsAbandoned(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := reader{stall: 60 * time.Millisecond}.hash(fifo, -1)
+	_, err := hashFile(guard.Reader{Stall: 60 * time.Millisecond}, fifo, -1)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("hash took %v to give up", elapsed)
 	}
-	var se *StallError
+	var se *guard.StallError
 	if !errors.As(err, &se) {
-		t.Fatalf("err = %v, want a *StallError", err)
+		t.Fatalf("err = %v, want a *guard.StallError", err)
 	}
 }
 
@@ -95,9 +97,9 @@ func TestFindTreatsAnUnreadableFileAsUnique(t *testing.T) {
 
 func swapPollInterval(t *testing.T, d time.Duration) func() {
 	t.Helper()
-	old := pollInterval
-	pollInterval = d
-	return func() { pollInterval = old }
+	old := guard.PollInterval
+	guard.PollInterval = d
+	return func() { guard.PollInterval = old }
 }
 
 // TestHashCancelIsAbandoned: Ctrl+C during a read that will never finish must return
@@ -120,12 +122,12 @@ func TestHashCancelIsAbandoned(t *testing.T) {
 	time.AfterFunc(30*time.Millisecond, func() { close(cancel) })
 
 	start := time.Now()
-	_, err := reader{cancel: cancel}.hash(fifo, -1) // stall guard off: cancel alone must do it
+	_, err := hashFile(guard.Reader{Cancel: cancel}, fifo, -1) // stall guard off: cancel alone must do it
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("hash took %v to stop", elapsed)
 	}
-	if !errors.Is(err, errCanceled) {
-		t.Fatalf("err = %v, want errCanceled", err)
+	if !errors.Is(err, guard.ErrCanceled) {
+		t.Fatalf("err = %v, want guard.ErrCanceled", err)
 	}
 }
 
@@ -152,8 +154,8 @@ func TestLongReadReportsBytes(t *testing.T) {
 	}()
 
 	var seen []int64
-	h := reader{stall: time.Second, onRead: func(n int64) { seen = append(seen, n) }}
-	if _, err := h.hash(fifo, -1); err != nil {
+	h := guard.Reader{Stall: time.Second, OnRead: func(n int64) { seen = append(seen, n) }}
+	if _, err := hashFile(h, fifo, -1); err != nil {
 		t.Fatal(err)
 	}
 	moving := false

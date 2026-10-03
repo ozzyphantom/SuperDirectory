@@ -17,6 +17,7 @@ import (
 
 	"github.com/ozzyphantom/SuperDirectory/internal/exif"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // Dims is a picture's displayed size in pixels.
@@ -118,14 +119,14 @@ func FindSimilar(items []flatten.Item, opts Options) SimilarResult {
 	}
 
 	// Stage 1: headers.
-	plain := reader{stall: opts.StallTimeout, cancel: opts.Cancel}
+	plain := guard.Reader{Stall: opts.StallTimeout, Cancel: opts.Cancel}
 	var comparable []*picture
 	for n, p := range pics {
 		src := items[p.idx].Src
 		report(Progress{Phase: ReadingHeaders, Done: n, Total: len(pics), Current: baseName(src)})
 		kind := p.kind
-		h, err := guarded(plain, src, func(f exif.File) (exif.Info, error) { return readHeaderOf(f, kind) })
-		if errors.Is(err, errCanceled) {
+		h, err := guard.Read(plain, src, func(f exif.File) (exif.Info, error) { return readHeaderOf(f, kind) })
+		if errors.Is(err, guard.ErrCanceled) {
 			res.Canceled = true
 			return res
 		}
@@ -472,11 +473,11 @@ func fingerprintAll(pics []*picture, items []flatten.Item, opts Options, phase P
 			jobs <- job{p: p}
 			continue
 		}
-		r := reader{stall: opts.StallTimeout, cancel: opts.Cancel, onRead: func(read int64) {
+		r := guard.Reader{Stall: opts.StallTimeout, Cancel: opts.Cancel, OnRead: func(read int64) {
 			report(Progress{Phase: phase, Done: n, Total: len(pics), Current: name, Read: read, Size: size})
 		}}
-		data, err := guarded(r, src, func(f exif.File) ([]byte, error) { return io.ReadAll(f) })
-		if errors.Is(err, errCanceled) {
+		data, err := guard.Read(r, src, func(f exif.File) ([]byte, error) { return io.ReadAll(f) })
+		if errors.Is(err, guard.ErrCanceled) {
 			canceled = true
 			break
 		}
@@ -492,7 +493,7 @@ func fingerprintAll(pics []*picture, items []flatten.Item, opts Options, phase P
 
 	for r := range results {
 		switch {
-		case errors.Is(r.err, errCanceled):
+		case errors.Is(r.err, guard.ErrCanceled):
 			canceled = true
 		case r.err != nil:
 			// Unreadable or undecodable: it cannot be confirmed, so it is kept.
