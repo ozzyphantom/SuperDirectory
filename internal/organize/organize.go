@@ -22,9 +22,8 @@
 package organize
 
 import (
-	"os"
+	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
@@ -45,43 +44,66 @@ type Options struct {
 	// place. Because a file's path relative to the source is unique, this
 	// layout never produces a name collision.
 	KeepSourceTree bool
+
+	// Table classifies extensions. Nil means the built-in table.
+	Table *Table
 }
 
 // Plan walks source and returns the ordered copy plan, skipping excluded
 // subtrees. Destination paths are relative to the target directory; execute the
 // plan with flatten.Copy, which creates the folders on demand.
 func Plan(source string, excluded map[string]bool, opts Options) ([]flatten.Item, error) {
-	var items []flatten.Item
-
-	err := flatten.Walk(source, excluded, func(path string, d os.DirEntry) {
-		name := d.Name()
-		ext := Extension(name)
-		dir := filepath.Join(Category(ext), extFolder(ext))
-
-		if opts.KeepSourceTree {
-			if rel := relDir(source, path); rel != "" {
-				dir = filepath.Join(dir, rel)
-			}
-		}
-		items = append(items, flatten.Item{Src: path, Want: filepath.Join(dir, name)})
-	})
+	files, err := flatten.Scan{Sources: []string{source}, Excluded: excluded}.Files()
 	if err != nil {
 		return nil, err
 	}
-	flatten.Assign(items)
-	return items, nil
+	return PlanFiles(files, opts), nil
 }
 
-// relDir returns the file's parent directory relative to source, or "" when the
-// file sits in the source root. A path that somehow escapes source (a walk that
-// crossed a link, a caller passing unrelated roots) yields "" rather than a
-// destination containing "..", which would write outside the target.
-func relDir(source, path string) string {
-	rel, err := filepath.Rel(source, filepath.Dir(path))
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return ""
+// PlanFiles sorts walked files into Category/extension folders. A file's type is
+// its Ext when an earlier stage set one (content detection), else its name's.
+// Aliases fold spellings of one type into one folder: .jpeg files land in jpg/,
+// still named .jpeg.
+func PlanFiles(files []flatten.File, opts Options) []flatten.Item {
+	t := opts.Table
+	if t == nil {
+		t = defaultTable
 	}
-	return rel
+	items := make([]flatten.Item, len(files))
+	for i, f := range files {
+		name := f.BaseName()
+		ext := f.Ext
+		if ext == "" {
+			ext = Extension(name)
+		}
+		dir := filepath.Join(t.Category(ext), extFolder(t.Folder(ext)))
+		if opts.KeepSourceTree {
+			if rel := f.Dir(); rel != "." {
+				dir = filepath.Join(dir, rel)
+			}
+		}
+		items[i] = flatten.Item{Src: f.Path, Want: filepath.Join(dir, name), Rel: f.Rel, Size: f.Size, ModTime: f.ModTime}
+	}
+	flatten.Assign(items)
+	return items
+}
+
+// PlanByDate sorts walked files into year/month folders: by when a photo or video
+// was taken where an earlier stage found that out, else by when the file was last
+// modified. Names collide more often here — two cameras both write IMG_0001.JPG —
+// and Assign settles that with a suffix as everywhere else.
+func PlanByDate(files []flatten.File) []flatten.Item {
+	items := make([]flatten.Item, len(files))
+	for i, f := range files {
+		when := f.Taken
+		if when.IsZero() {
+			when = f.ModTime
+		}
+		dir := filepath.Join(fmt.Sprintf("%04d", when.Year()), fmt.Sprintf("%02d", int(when.Month())))
+		items[i] = flatten.Item{Src: f.Path, Want: filepath.Join(dir, f.BaseName()), Rel: f.Rel, Size: f.Size, ModTime: f.ModTime}
+	}
+	flatten.Assign(items)
+	return items
 }
 
 // extFolder is the folder name for an extension.
@@ -134,39 +156,25 @@ func Extension(name string) string {
 	return ext
 }
 
-// Category maps an extension to its human-facing bucket, or CategoryOther when
-// the extension is unknown. An empty extension is Other.
-func Category(ext string) string {
-	if c, ok := extToCategory[ext]; ok {
-		return c
-	}
-	return CategoryOther
-}
+// Category maps an extension to its bucket in the built-in table, or
+// CategoryOther when the extension is unknown. An empty extension is Other.
+func Category(ext string) string { return defaultTable.Category(ext) }
 
-// Categories lists every known category name, sorted. CategoryOther is not
-// included: it is the fallback, not a member of the table.
-func Categories() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, c := range extToCategory {
-		if !seen[c] {
-			seen[c] = true
-			out = append(out, c)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
+// Categories lists every category in the built-in table, sorted. CategoryOther is
+// not included: it is the fallback, not a member of the table.
+func Categories() []string { return defaultTable.Categories() }
 
-// categoryExts is the source of truth, written the readable way round: one
-// category, its extensions. extToCategory inverts it at init.
+// categoryExts is the built-in table, written the readable way round: one
+// category, its extensions.
 var categoryExts = map[string][]string{
 	"Documents": {
 		"pdf", "doc", "docx", "odt", "rtf", "txt", "md", "markdown", "rst",
-		"tex", "pages", "epub", "mobi", "azw3", "djvu", "log",
+		"tex", "pages", "epub", "mobi", "azw3", "djvu", "log", "chm", "xps",
+		"oxps", "ps",
 	},
 	"Spreadsheets":  {"xls", "xlsx", "xlsm", "csv", "tsv", "ods", "numbers"},
 	"Presentations": {"ppt", "pptx", "odp", "key"},
+	"Diagrams":      {"vsd", "vsdx", "vsdm", "drawio", "dia", "graffle"},
 	"Images": {
 		"jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "svg",
 		"heic", "heif", "avif", "ico", "psd", "ai", "eps", "raw", "cr2",
@@ -196,12 +204,11 @@ var categoryExts = map[string][]string{
 	"Fonts": {"ttf", "otf", "woff", "woff2", "eot"},
 }
 
-var extToCategory = func() map[string]string {
-	m := make(map[string]string)
-	for cat, exts := range categoryExts {
-		for _, e := range exts {
-			m[e] = cat
-		}
-	}
-	return m
-}()
+// aliasExts fold spellings of one type into one folder. Only the folder changes:
+// a .jpeg file lands in Images/jpg/ and keeps its name.
+var aliasExts = map[string]string{
+	"jpeg": "jpg", "jpe": "jpg", "jfif": "jpg",
+	"tif": "tiff", "htm": "html", "shtml": "html",
+	"yml": "yaml", "markdown": "md", "mdown": "md",
+	"mpeg": "mpg", "aif": "aiff", "midi": "mid", "tgz": "tar.gz",
+}

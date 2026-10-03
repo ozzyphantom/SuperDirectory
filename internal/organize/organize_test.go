@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 )
@@ -250,5 +251,95 @@ func TestCopyCreatesNestedDirs(t *testing.T) {
 		if string(got) != content {
 			t.Errorf("%s holds %q, want the file from %q", rel, got, content)
 		}
+	}
+}
+
+func fileAt(rel string) flatten.File {
+	return flatten.File{Path: "/src/" + rel, Rel: filepath.FromSlash(rel)}
+}
+
+// TestAliasesShareAFolderButKeepTheName: .jpeg and .jpg are one type. Splitting
+// them across two folders made a reader look in both.
+func TestAliasesShareAFolderButKeepTheName(t *testing.T) {
+	items := PlanFiles([]flatten.File{fileAt("a/IMG_1.jpeg"), fileAt("b/IMG_2.jpg"), fileAt("page.htm")}, Options{})
+	got := dsts(items)
+	want := []string{"Code/html/page.htm", "Images/jpg/IMG_1.jpeg", "Images/jpg/IMG_2.jpg"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got %v, want %v", got, want)
+			break
+		}
+	}
+}
+
+// TestDetectedTypeOverridesTheName: a PDF saved as .txt sorts with PDFs when an
+// earlier stage detected its real type.
+func TestDetectedTypeOverridesTheName(t *testing.T) {
+	f := fileAt("report.txt")
+	f.Ext, f.Name = "pdf", "report.pdf"
+	got := dsts(PlanFiles([]flatten.File{f}, Options{}))
+	if got[0] != "Documents/pdf/report.pdf" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestPlanByDateUsesTakenThenModified(t *testing.T) {
+	taken := fileAt("DCIM/IMG_0001.JPG")
+	taken.Taken = time.Date(2019, 7, 14, 10, 0, 0, 0, time.Local)
+	taken.ModTime = time.Date(2023, 1, 1, 0, 0, 0, 0, time.Local)
+	doc := fileAt("notes.txt")
+	doc.ModTime = time.Date(2021, 12, 31, 23, 0, 0, 0, time.Local)
+	other := fileAt("DCIM2/IMG_0001.JPG") // another camera's IMG_0001
+	other.Taken = time.Date(2019, 7, 2, 9, 0, 0, 0, time.Local)
+
+	got := dsts(PlanByDate([]flatten.File{taken, doc, other}))
+	want := []string{"2019/07/IMG_0001.JPG", "2019/07/IMG_0001_1.JPG", "2021/12/notes.txt"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestLoadTable(t *testing.T) {
+	dir := t.TempDir()
+	if tbl, err := LoadTable(filepath.Join(dir, "missing.json")); err != nil || tbl != DefaultTable() {
+		t.Fatalf("a missing file should mean the built-in table: %v", err)
+	}
+
+	custom := filepath.Join(dir, "categories.json")
+	os.WriteFile(custom, []byte(`{"categories": {"Data": ["fasta", ".CSV"], "Documents": ["pdf"]}, "aliases": {}}`), 0o644)
+	tbl, err := LoadTable(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tbl.Category("fasta") != "Data" || tbl.Category("csv") != "Data" || tbl.Category("jpg") != CategoryOther {
+		t.Errorf("custom categories did not replace the built-in table: fasta=%s csv=%s jpg=%s",
+			tbl.Category("fasta"), tbl.Category("csv"), tbl.Category("jpg"))
+	}
+	if tbl.Folder("jpeg") != "jpeg" {
+		t.Error("an empty aliases section should switch aliases off")
+	}
+
+	for _, bad := range []string{`{"categories": {"a/b": ["x"]}}`, `{"categories": {"Docs": ["a/b"]}}`, `{nope`} {
+		os.WriteFile(custom, []byte(bad), 0o644)
+		if _, err := LoadTable(custom); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+
+	// What --write saves loads back as the same table.
+	os.WriteFile(custom, DefaultTable().JSON(), 0o644)
+	back, err := LoadTable(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ext := range []string{"pdf", "jpg", "tar.gz", "vsdx", "go"} {
+		if back.Category(ext) != Category(ext) {
+			t.Errorf("round trip changed %s: %s vs %s", ext, back.Category(ext), Category(ext))
+		}
+	}
+	if back.Folder("jpeg") != "jpg" {
+		t.Error("round trip lost the aliases")
 	}
 }

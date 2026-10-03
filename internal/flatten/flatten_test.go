@@ -2,10 +2,12 @@ package flatten
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -464,5 +466,103 @@ func TestAssignFallsBackToDst(t *testing.T) {
 	Assign(items)
 	if items[0].Dst != "x.txt" {
 		t.Errorf("Dst = %q, want x.txt", items[0].Dst)
+	}
+}
+
+func writeTree(t *testing.T, root string, rels ...string) {
+	t.Helper()
+	for _, rel := range rels {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(rel), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestScanSeveralSourcesKeepsThemApart: two sources each with a README must not
+// fight over one name, and every planner sees which source a file came from.
+func TestScanSeveralSourcesKeepsThemApart(t *testing.T) {
+	a := filepath.Join(t.TempDir(), "Manuals")
+	b := filepath.Join(t.TempDir(), "Manuals") // same folder name, different drive
+	writeTree(t, a, "README.md", "net/setup.pdf")
+	writeTree(t, b, "README.md")
+
+	files, err := Scan{Sources: []string{a, b}}.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rels []string
+	for _, f := range files {
+		rels = append(rels, filepath.ToSlash(f.Rel))
+		if f.Size <= 0 || f.ModTime.IsZero() {
+			t.Errorf("%s was not measured", f.Rel)
+		}
+	}
+	want := []string{"Manuals/README.md", "Manuals/net/setup.pdf", "Manuals_2/README.md"}
+	if strings.Join(rels, ",") != strings.Join(want, ",") {
+		t.Fatalf("Rel = %v, want %v", rels, want)
+	}
+	got := map[string]bool{}
+	for _, it := range PlanFiles(files) {
+		got[it.Dst] = true
+	}
+	for _, d := range []string{"Manuals_README.md", "net_setup.pdf", "Manuals_2_README.md"} {
+		if !got[d] {
+			t.Errorf("missing %s in %v", d, got)
+		}
+	}
+}
+
+func TestScanFilters(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, "keep.pdf", "big.iso", "node_modules/lib.js", "src/node_modules/x.js", "src/a.go")
+	files, err := Scan{
+		Sources: []string{root},
+		Prune:   func(name string) bool { return name == "node_modules" },
+		Keep:    func(f File) bool { return filepath.Ext(f.Path) != ".iso" },
+	}.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, f := range files {
+		names = append(names, filepath.ToSlash(f.Rel))
+	}
+	if strings.Join(names, ",") != "keep.pdf,src/a.go" {
+		t.Errorf("kept %v", names)
+	}
+}
+
+func TestScanStops(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, "a.txt")
+	stop := make(chan struct{})
+	close(stop)
+	if _, err := (Scan{Sources: []string{root}, Cancel: stop}).Files(); !errors.Is(err, ErrStopped) {
+		t.Errorf("err = %v, want ErrStopped", err)
+	}
+}
+
+func TestPlanDepthKeepsTheTopLevels(t *testing.T) {
+	mk := func(rel string) File { return File{Path: "/s/" + rel, Rel: filepath.FromSlash(rel)} }
+	files := []File{mk("top.txt"), mk("Docs/one.pdf"), mk("Docs/A/B/deep.pdf"), mk("Docs/A/x.pdf")}
+	var got []string
+	for _, it := range PlanDepth(files, 1) {
+		got = append(got, filepath.ToSlash(it.Dst))
+	}
+	want := []string{"top.txt", "Docs/one.pdf", "Docs/B_deep.pdf", "Docs/A_x.pdf"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("depth 1: %v, want %v", got, want)
+	}
+}
+
+func TestLabelsAreDistinctIgnoringCase(t *testing.T) {
+	got := Labels([]string{"/a/Photos", "/b/photos", "/", "/c/Photos"})
+	want := []string{"Photos", "photos_2", "root", "Photos_3"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Labels = %v, want %v", got, want)
 	}
 }

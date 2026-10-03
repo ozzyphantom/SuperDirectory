@@ -20,8 +20,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
 )
 
 // Item is one planned copy: an absolute source path, and the destination
@@ -35,6 +33,13 @@ type Item struct {
 	// Want is the destination the planner asked for, before Assign gave it a
 	// collision suffix. Dst equals Want unless an earlier file claimed it.
 	Want string
+
+	// Rel is where the file sat, relative to the sources, for the report. Size
+	// and ModTime are as the walk measured them: resume compares them with what
+	// is already in the destination.
+	Rel     string
+	Size    int64
+	ModTime time.Time
 }
 
 // Assign gives every item a collision-free Dst from its Want, in plan order. The
@@ -59,65 +64,56 @@ type Failure struct {
 	Err error
 }
 
-// Walk visits every regular file under source in lexical order, skipping
-// excluded directories and everything beneath them. Unreadable entries are
-// tolerated rather than fatal, mirroring the Python code's `except
-// PermissionError` behavior. Symlinks, sockets, and devices are skipped — real
-// files only.
-//
-// Filesystem bookkeeping is skipped too: .DS_Store, AppleDouble "._" sidecars,
-// .Spotlight-V100/, $RECYCLE.BIN/ and friends (see package fsmeta). Without this,
-// flattening the root of an external drive copies more operating-system metadata
-// than user files. A metadata directory is pruned entirely, not merely skipped.
-//
-// The source directory itself is never treated as metadata: if the user
-// deliberately points at .Trashes, that is their business.
-//
-// Both planners share this traversal so that exclusion semantics can never
-// drift between them.
-func Walk(source string, excluded map[string]bool, fn func(path string, d os.DirEntry)) error {
-	return filepath.WalkDir(source, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path == source {
-				return nil
-			}
-			if excluded[path] || fsmeta.IsMetadata(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() || fsmeta.IsMetadata(d.Name()) {
-			return nil
-		}
-		fn(path, d)
-		return nil
-	})
-}
-
 // Plan walks source and returns the ordered copy plan for a flat superdirectory.
-// Files in the source root keep their name; files in a subdirectory are prefixed
-// with "<parentdir>_" to preserve context. Remaining collisions get a numeric
-// "_1", "_2" suffix — matching the Python implementation.
 func Plan(source string, excluded map[string]bool) ([]Item, error) {
-	var items []Item
-
-	err := Walk(source, excluded, func(path string, d os.DirEntry) {
-		parent := filepath.Dir(path)
-		name := d.Name()
-		newName := name
-		if parent != source {
-			newName = filepath.Base(parent) + "_" + name
-		}
-		items = append(items, Item{Src: path, Want: newName})
-	})
+	files, err := Scan{Sources: []string{source}, Excluded: excluded}.Files()
 	if err != nil {
 		return nil, err
 	}
+	return PlanFiles(files), nil
+}
+
+// PlanFiles is the flat layout. Files at the top keep their name; files in a
+// folder are prefixed with "<folder>_" to keep a hint of where they came from.
+// Remaining collisions get a numeric "_1", "_2" suffix from Assign.
+func PlanFiles(files []File) []Item {
+	items := make([]Item, len(files))
+	for i, f := range files {
+		name := f.BaseName()
+		if dir := f.Dir(); dir != "." {
+			name = filepath.Base(dir) + "_" + name
+		}
+		items[i] = itemFor(f, name)
+	}
 	Assign(items)
-	return items, nil
+	return items
+}
+
+// PlanDepth keeps the top depth levels of folders and flattens everything below
+// them into the folder at that level, each file prefixed with "<folder>_" as in
+// the flat layout. Depth 1 turns Docs/A/B/c.pdf into Docs/B_c.pdf.
+func PlanDepth(files []File, depth int) []Item {
+	items := make([]Item, len(files))
+	for i, f := range files {
+		name := f.BaseName()
+		dir := f.Dir()
+		if dir != "." {
+			parts := strings.Split(dir, string(filepath.Separator))
+			if len(parts) > depth {
+				name = parts[len(parts)-1] + "_" + name
+				dir = filepath.Join(parts[:depth]...)
+			}
+			name = filepath.Join(dir, name)
+		}
+		items[i] = itemFor(f, name)
+	}
+	Assign(items)
+	return items
+}
+
+// itemFor is the plan entry for a file headed for want.
+func itemFor(f File, want string) Item {
+	return Item{Src: f.Path, Want: want, Rel: f.Rel, Size: f.Size, ModTime: f.ModTime}
 }
 
 // Unique reserves name in used, appending _1, _2, ... before the extension
