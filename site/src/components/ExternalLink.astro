@@ -1,0 +1,21 @@
+---
+/* A link that leaves the site. It opens in a new tab, so this page stays
+   where the reader left it (UX standard [08.3]), and it carries an arrow so
+   it never looks like an internal link ([05.5]). The arrow is decoration; the
+   hidden text says the same thing to a screen reader. */
+interface Props {
+  href: string;
+  class?: string;
+}
+const { href, class: cls } = Astro.props;
+---
+
+<a class:list={['ext', cls]} href={href} target="_blank" rel="noopener"><slot /><span class="ext__arrow" aria-hidden="true">↗</span><span class="vh" data-md-skip> (opens in a new tab)</span></a>
+
+<style is:global>
+  .ext__arrow {
+    display: inline-block;
+    margin-left: 0.15em;
+    text-decoration: none;
+  }
+</style>

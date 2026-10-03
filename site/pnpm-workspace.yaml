@@ -1,0 +1,12 @@
+# Software supply-chain hardening — see the DuskStone opsec cyber notes (vault).
+# Same settings as Personal-Site. They live here (pnpm 11), not in package.json or .npmrc.
+minimumReleaseAge: 10080          # minutes (1 week) before a newly published version is installable
+blockExoticSubdeps: true          # transitive deps must come from the registry, not git/tarball URLs
+trustPolicy: no-downgrade         # reject releases with weaker publisher provenance
+
+# Build/lifecycle scripts are blocked by default. Allowlist only packages reviewed and trusted.
+# `pnpm approve-builds` writes entries here. Never set dangerouslyAllowAllBuilds.
+# No sharp entry: sharp 0.35 (Astro's optional image dependency) installs prebuilt
+# binaries and has no lifecycle script to allow, and this site ships no raster images.
+allowBuilds:
+  esbuild: true                   # bundler used by Vite/Astro; installs its platform binary

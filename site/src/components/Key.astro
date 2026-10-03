@@ -1,0 +1,91 @@
+---
+/* A keyboard key, drawn as a keycap: <Key k="esc" />, <Key k="ctrl+c" />.
+
+   Key names follow the reader's platform (UX standard [13.5]). A Mac keyboard
+   says Control, Return and Delete where other keyboards say Ctrl, Enter and
+   Backspace. Both names are in the HTML; CSS shows one, from the data-os
+   attribute that public/scripts/site.js stamps on <html> before first paint,
+   so the name is never briefly wrong. Without the script the general name
+   shows.
+
+   SuperDirectory's Ctrl+C is a terminal key. On a Mac it is Control-C, never
+   Command-C: Command-C copies selected text in Terminal and does not stop the
+   program. So the standard's Command-for-Ctrl example does not apply to the
+   program's keys.
+
+   The markup is built as one string so no stray whitespace lands inside a
+   keycap or around the "+" of a combination. Every input is a literal from
+   this site's own pages. */
+interface Props {
+  k: string;
+}
+
+type Name = string | { mac: string; other: string };
+const NAMES: Record<string, Name> = {
+  ctrl: { mac: 'Control', other: 'Ctrl' },
+  enter: { mac: 'Return', other: 'Enter' },
+  backspace: { mac: 'Delete', other: 'Backspace' },
+  esc: 'Esc',
+  space: 'Space',
+  up: '↑',
+  down: '↓',
+  left: '←',
+  right: '→',
+};
+
+const ARROWS = new Set(['↑', '↓', '←', '→']);
+const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const cap = (n: Name) =>
+  typeof n === 'string'
+    ? `<kbd class="${ARROWS.has(n) ? 'key key--arrow' : 'key'}">${escape(n)}</kbd>`
+    : `<kbd class="key"><span class="on-mac">${escape(n.mac)}</span><span class="off-mac">${escape(n.other)}</span></kbd>`;
+
+/* A letter alone is the key the program reads, so it keeps its case: p, q.
+   A letter in a combination is a key legend, and legends are capitals: Ctrl+C. */
+const raw = Astro.props.k.split('+');
+const parts = raw.map((p) => NAMES[p.toLowerCase()] ?? (raw.length > 1 ? p.toUpperCase() : p));
+const html = parts.length > 1 ? `<kbd class="combo">${parts.map(cap).join('+')}</kbd>` : cap(parts[0]);
+---
+
+<Fragment set:html={html} />
+
+<style is:global>
+  /* The keycap: a full border, and a thicker base edge in the accent. The
+     base is what makes it a key and not code (see tokens.css, --signal). */
+  .key {
+    display: inline-block;
+    min-width: 1.9em;
+    padding: 0.05em 0.45em 0;
+    color: var(--fg);
+    background: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    font-weight: 600;
+    line-height: 1.45;
+    text-align: center;
+    white-space: nowrap;
+    border: 1px solid var(--edge);
+    border-bottom: 3px solid var(--signal);
+    border-radius: var(--radius-key);
+  }
+  /* Monospace arrows draw small; the sans arrows read at a glance. */
+  .key--arrow {
+    font-family: var(--font-sans);
+    font-weight: 700;
+  }
+  .combo {
+    font-family: inherit;
+    font-size: inherit;
+    white-space: nowrap;
+  }
+
+  .on-mac {
+    display: none;
+  }
+  [data-os='mac'] .on-mac {
+    display: inline;
+  }
+  [data-os='mac'] .off-mac {
+    display: none;
+  }
+</style>

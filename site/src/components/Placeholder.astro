@@ -1,0 +1,44 @@
+---
+/* A place where a person writes the copy. An agent writes no non-technical
+   copy on this site (UX standard [02.1]), so the page shows a visible marker
+   instead: [COPY · id · length: kind].
+
+   Every id here has a row in site/COPY.md. scripts/check-copy.mjs fails the
+   check when the built site and that table disagree. To fill a place, replace
+   this component with the real element and its text, then mark the row
+   "filled". */
+interface Props {
+  /* kebab-case, page first: home-hero-heading */
+  id: string;
+  /* suggested length: "6–10 words" */
+  length: string;
+  /* what the copy says */
+  kind: string;
+  /* the element the copy will be */
+  as?: 'h1' | 'h2' | 'h3' | 'p';
+  class?: string;
+}
+const { id, length, kind, as: Tag = 'p', class: cls } = Astro.props;
+---
+
+<Tag class:list={['copy-slot', cls]} data-copy-id={id}>[COPY · {id} · {length}: {kind}]</Tag>
+
+<style is:global>
+  /* Dashed and set in mono, so no reader takes it for finished text. It
+     keeps the element it stands in for (an h1 stays the page's h1). */
+  .copy-slot {
+    display: flex;
+    align-items: center;
+    max-width: var(--measure);
+    min-height: var(--slot-min, auto);
+    padding: var(--space-3) var(--space-4);
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 400;
+    line-height: 1.5;
+    letter-spacing: 0;
+    border: 2px dashed var(--edge);
+    border-radius: var(--radius-control);
+  }
+</style>

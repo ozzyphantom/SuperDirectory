@@ -1,0 +1,68 @@
+---
+import Base from '../layouts/Base.astro';
+
+/* Built as dist/404.html. Cloudflare Pages answers every unknown path with
+   this page and status 404; without it, Pages soft-404s (200 and the home
+   page). The message says what went wrong and offers the ways on
+   (UX standard [15.3]). */
+---
+
+<Base title="Not found · SuperDirectory" markdown={false} indexable={false}>
+  <div class="wrap notfound">
+    <p class="notfound__code">404</p>
+    <h1>Not found</h1>
+    <p>No page exists at this address.</p>
+    <nav aria-label="Ways on">
+      <ul>
+        <li><a href="/">Home</a></li>
+        <li><a href="/docs/">Docs</a></li>
+      </ul>
+    </nav>
+  </div>
+</Base>
+
+<style is:global>
+  .notfound {
+    padding-top: var(--space-8);
+  }
+  .notfound__code {
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 700;
+  }
+  .notfound h1 {
+    margin-top: var(--space-2);
+  }
+  .notfound h1 + p {
+    margin-top: var(--space-3);
+  }
+  .notfound ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin: var(--space-6) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  /* Navigation buttons: filled, unlike the outlined action buttons. */
+  .notfound nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--target);
+    padding-inline: var(--space-5);
+    color: var(--bg);
+    background: var(--fg);
+    font-weight: 700;
+    text-decoration: none;
+    border: 2px solid var(--fg);
+    border-radius: var(--radius-control);
+  }
+  .notfound nav a:hover {
+    color: var(--fg);
+    background: var(--bg);
+  }
+  .notfound nav a:active {
+    transform: translateY(1px);
+  }
+</style>
