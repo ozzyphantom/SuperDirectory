@@ -267,14 +267,12 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 			if p.Total == 0 {
 				return
 			}
-			if now := time.Now(); now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
+			now := time.Now()
+			if now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
 				return
-			} else {
-				lastDraw = now
 			}
-			line := "  " + dim.Render(fmt.Sprintf(
-				"hashing %d/%d candidates  %s", p.Done, p.Total, truncateMiddle(p.Current, 28)))
-			fmt.Printf("\r%s\033[K", ansi.Truncate(line, termWidth(), "…"))
+			lastDraw = now
+			fmt.Printf("\r%s\033[K", ansi.Truncate("  "+dim.Render(scanStatus(p)), termWidth(), "…"))
 		},
 	})
 	fmt.Print("\r\033[K")
@@ -319,6 +317,20 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 	default:
 		return nil, abandoned
 	}
+}
+
+// scanStatus describes the duplicate scan's progress in one line.
+func scanStatus(p dedup.Progress) string {
+	if p.Phase == dedup.Sizing {
+		return fmt.Sprintf("checking sizes  %d/%d", p.Done, p.Total)
+	}
+	s := fmt.Sprintf("hashing %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	// A large file's byte count shows a long read moving; on a small file it would
+	// only flicker.
+	if p.Size >= 8<<20 {
+		s += fmt.Sprintf("  %s of %s", humanBytes(p.Read), humanBytes(p.Size))
+	}
+	return s
 }
 
 // postCompletion shows the after-copy menu. Open/reveal loop back to the menu;

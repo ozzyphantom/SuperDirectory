@@ -193,7 +193,11 @@ func TestProgressCountsOnlyCandidates(t *testing.T) {
 	c := write(t, dir, "c.bin", []byte("unique size"))
 
 	var totals []int
-	Find(plan(a, b, c), Options{OnProgress: func(p Progress) { totals = append(totals, p.Total) }})
+	Find(plan(a, b, c), Options{OnProgress: func(p Progress) {
+		if p.Phase == Hashing {
+			totals = append(totals, p.Total)
+		}
+	}})
 	if len(totals) == 0 {
 		t.Fatal("no progress reported")
 	}
@@ -201,6 +205,43 @@ func TestProgressCountsOnlyCandidates(t *testing.T) {
 		if total != 2 {
 			t.Errorf("progress Total = %d, want 2 — only same-size files are read", total)
 		}
+	}
+}
+
+// TestProgressCoversTheFullReads: two large files whose leading blocks match need a
+// full read each. Those reads used to report nothing, freezing the display on its
+// last line for as long as two big videos took to read.
+func TestProgressCoversTheFullReads(t *testing.T) {
+	dir := t.TempDir()
+	big := bytes.Repeat([]byte("v"), 3*partialHashBytes)
+	items := plan(write(t, dir, "a.mov", big), write(t, dir, "b.mov", big), write(t, dir, "c.txt", []byte("x")))
+
+	var sizing, fullReads int
+	var last Progress
+	res := Find(items, Options{OnProgress: func(p Progress) {
+		switch {
+		case p.Phase == Sizing:
+			sizing++
+			if p.Total != len(items) {
+				t.Errorf("sizing Total = %d, want %d", p.Total, len(items))
+			}
+		case p.Current != "" && p.Size == int64(len(big)) && p.Read == 0:
+			fullReads++
+		}
+		last = p
+	}})
+
+	if res.Files != 1 {
+		t.Fatalf("expected the pair to match, got %d skippable", res.Files)
+	}
+	if sizing == 0 {
+		t.Error("the size check reported nothing")
+	}
+	if fullReads != 2 {
+		t.Errorf("announced %d full reads, want 2", fullReads)
+	}
+	if last.Done != last.Total || last.Total != 4 {
+		t.Errorf("final report %d/%d, want 4/4: two leading blocks, two full reads", last.Done, last.Total)
 	}
 }
 

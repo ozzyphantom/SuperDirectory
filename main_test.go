@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 )
 
@@ -238,5 +239,22 @@ func TestProgressLineFitsTheTerminal(t *testing.T) {
 		if !strings.Contains(stuck, want) {
 			t.Errorf("60 columns, stalled: missing %q:\n%s", want, stuck)
 		}
+	}
+}
+
+// TestScanStatusShowsALongReadMoving: the full read of a large video is where the
+// scan used to freeze on screen. Its byte count must be visible; a small file's
+// would only flicker.
+func TestScanStatusShowsALongReadMoving(t *testing.T) {
+	if got := scanStatus(dedup.Progress{Phase: dedup.Sizing, Done: 2048, Total: 11041}); got != "checking sizes  2048/11041" {
+		t.Errorf("sizing line = %q", got)
+	}
+	big := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 3, Total: 4, Current: "GX010042.MP4", Read: 1_200_000_000, Size: 4_000_000_000})
+	if !strings.Contains(big, "1.2 GB of 4.0 GB") || !strings.Contains(big, "GX010042.MP4") {
+		t.Errorf("large read should show its file and bytes: %q", big)
+	}
+	small := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 1, Total: 4, Current: "a.jpg", Read: 4096, Size: 65536})
+	if strings.Contains(small, " of ") {
+		t.Errorf("a small read should not show a byte count: %q", small)
 	}
 }

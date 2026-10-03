@@ -46,9 +46,10 @@ type Options struct {
 	// copy that hangs. Zero disables the guard.
 	StallTimeout time.Duration
 
-	// OnProgress reports hashing progress. Only candidate files — those sharing a
-	// size with another — are ever hashed, so Total is usually far below the number
-	// of files in the plan.
+	// OnProgress reports the scan as it goes: once per batch of files while sizes
+	// are checked, then before each read and periodically through a long one. Only
+	// candidate files — those sharing a size with another — are ever read, so the
+	// hashing Total is usually far below the number of files in the plan.
 	OnProgress func(Progress)
 
 	// Cancel, once closed, stops the scan: the read in flight is abandoned and Find
@@ -56,11 +57,29 @@ type Options struct {
 	Cancel <-chan struct{}
 }
 
-// Progress reports how far the hashing has got.
+// Phase is the stage of the scan a Progress report belongs to.
+type Phase int
+
+const (
+	// Sizing stats every file. Nothing is opened.
+	Sizing Phase = iota
+	// Hashing reads the files that share a size with another.
+	Hashing
+)
+
+// Progress reports how far the scan has got.
+//
+// While hashing, Total grows as the scan runs: a pair whose leading blocks match
+// needs a full read of each, and that is only known once the leading blocks are
+// in. Read and Size cover the file in flight, so a long read of a large video is
+// visibly moving rather than frozen on its name.
 type Progress struct {
-	Done    int    // candidate files hashed
-	Total   int    // candidate files to hash
+	Phase   Phase
+	Done    int    // files sized, or reads finished
+	Total   int    // files to size, or reads known to be needed
 	Current string // base name of the file being read
+	Read    int64  // bytes of Current read so far
+	Size    int64  // bytes of Current this read will cover
 }
 
 // Set is a group of plan items with identical contents.
@@ -88,14 +107,30 @@ type Result struct {
 	Canceled bool
 }
 
+// sizingBatch is how many stats pass between progress reports and stop checks.
+const sizingBatch = 256
+
 // Find groups the plan's items by content. It never modifies the plan; pass the
 // result to Filter to apply it.
 func Find(items []flatten.Item, opts Options) Result {
 	var res Result
+	report := func(p Progress) {
+		if opts.OnProgress != nil {
+			opts.OnProgress(p)
+		}
+	}
 
-	// Stage 1: size. A stat per file, and nothing is opened.
+	// Stage 1: size. A stat per file, and nothing is opened. On an external drive a
+	// stat is a bus round trip, so this alone can take seconds and reports as it goes.
 	bySize := map[int64][]int{}
 	for i, it := range items {
+		if i%sizingBatch == 0 {
+			if closed(opts.Cancel) {
+				res.Canceled = true
+				return res
+			}
+			report(Progress{Phase: Sizing, Done: i, Total: len(items)})
+		}
 		info, err := os.Stat(it.Src)
 		if err != nil || info.Size() == 0 {
 			// Unstattable files are left alone. Empty files are all "identical" to
@@ -106,29 +141,45 @@ func Find(items []flatten.Item, opts Options) Result {
 		bySize[info.Size()] = append(bySize[info.Size()], i)
 	}
 
-	// Only sizes shared by more than one file are worth reading.
-	var candidates [][]int
+	// Only sizes shared by more than one file are worth reading. The size travels
+	// with its group: it is already known, and asking the drive again costs a stat.
+	type sizeGroup struct {
+		size  int64
+		files []int
+	}
+	var candidates []sizeGroup
 	total := 0
-	for _, group := range bySize {
-		if len(group) > 1 {
-			candidates = append(candidates, group)
-			total += len(group)
+	for size, files := range bySize {
+		if len(files) > 1 {
+			candidates = append(candidates, sizeGroup{size, files})
+			total += len(files)
 		}
 	}
 	// Deterministic order, so progress and results do not depend on map iteration.
-	sort.Slice(candidates, func(a, b int) bool { return candidates[a][0] < candidates[b][0] })
+	sort.Slice(candidates, func(a, b int) bool { return candidates[a].files[0] < candidates[b].files[0] })
 
 	done := 0
-	hash := func(idx int, limit int64) (string, bool) {
-		if opts.OnProgress != nil {
-			opts.OnProgress(Progress{Done: done, Total: total, Current: baseName(items[idx].Src)})
+	// read hashes one file — its first limit bytes, or all of it when limit is
+	// negative — reporting as it goes. It returns false for a file that could not
+	// be read, which is recorded and treated as unique, and for a stopped scan,
+	// which sets res.Canceled.
+	read := func(idx int, limit, size int64) (string, bool) {
+		name := baseName(items[idx].Src)
+		span := size
+		if limit >= 0 && limit < size {
+			span = limit
 		}
-		sum, err := hashFile(items[idx].Src, limit, opts.StallTimeout, opts.Cancel)
-		if errors.Is(err, errCanceled) {
+		report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Size: span})
+		h := hasher{stall: opts.StallTimeout, cancel: opts.Cancel, onRead: func(n int64) {
+			report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Read: n, Size: span})
+		}}
+		sum, err := h.hash(items[idx].Src, limit)
+		done++
+		switch {
+		case errors.Is(err, errCanceled):
 			res.Canceled = true
 			return "", false
-		}
-		if err != nil {
+		case err != nil:
 			res.Unreadable = append(res.Unreadable, items[idx].Src)
 			return "", false
 		}
@@ -136,18 +187,14 @@ func Find(items []flatten.Item, opts Options) Result {
 		return sum, true
 	}
 
-	for _, group := range candidates {
-		size := sizeOf(items, group)
-
+	for _, g := range candidates {
 		// Stage 2: the leading block. For files at or below that size this is already
 		// the whole file, so stage 3 has nothing left to do.
-		limit := int64(partialHashBytes)
-		partialIsWhole := size <= partialHashBytes
+		partialIsWhole := g.size <= partialHashBytes
 
 		byPartial := map[string][]int{}
-		for _, idx := range group {
-			sum, ok := hash(idx, limit)
-			done++
+		for _, idx := range g.files {
+			sum, ok := read(idx, partialHashBytes, g.size)
 			if res.Canceled {
 				return res
 			}
@@ -161,35 +208,43 @@ func Find(items []flatten.Item, opts Options) Result {
 				continue
 			}
 			if partialIsWhole {
-				res.add(sameHead, size)
+				res.add(sameHead, g.size)
 				continue
 			}
 			// Stage 3: the whole file, only for the few that still match.
+			total += len(sameHead)
 			byFull := map[string][]int{}
 			for _, idx := range sameHead {
-				sum, err := hashFile(items[idx].Src, -1, opts.StallTimeout, opts.Cancel)
-				if errors.Is(err, errCanceled) {
-					res.Canceled = true
+				sum, ok := read(idx, -1, g.size)
+				if res.Canceled {
 					return res
 				}
-				if err != nil {
-					res.Unreadable = append(res.Unreadable, items[idx].Src)
-					continue
+				if ok {
+					byFull[sum] = append(byFull[sum], idx)
 				}
-				res.Hashed++
-				byFull[sum] = append(byFull[sum], idx)
 			}
 			for _, identical := range byFull {
-				res.add(identical, size)
+				res.add(identical, g.size)
 			}
 		}
 	}
 
-	if opts.OnProgress != nil && total > 0 {
-		opts.OnProgress(Progress{Done: total, Total: total})
+	if total > 0 {
+		report(Progress{Phase: Hashing, Done: total, Total: total})
 	}
 	sort.Slice(res.Sets, func(a, b int) bool { return res.Sets[a].Keep < res.Sets[b].Keep })
 	return res
+}
+
+// closed reports whether c has been closed, without blocking. A nil channel is
+// never closed.
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // add records a group of identical files, keeping the earliest in plan order. That
@@ -225,14 +280,6 @@ func Filter(items []flatten.Item, res Result) []flatten.Item {
 	return out
 }
 
-func sizeOf(items []flatten.Item, group []int) int64 {
-	info, err := os.Stat(items[group[0]].Src)
-	if err != nil {
-		return 0
-	}
-	return info.Size()
-}
-
 func baseName(p string) string {
 	for i := len(p) - 1; i >= 0; i-- {
 		if p[i] == '/' || p[i] == '\\' {
@@ -249,23 +296,29 @@ func (e *StallError) Error() string {
 	return fmt.Sprintf("no data for %s while hashing", e.After)
 }
 
-// errCanceled is what hashFile returns when Options.Cancel closes mid-read.
+// errCanceled is what a read returns when Options.Cancel closes.
 var errCanceled = errors.New("scan canceled")
 
-// hashFile returns the SHA-256 of the file, or of its first limit bytes when limit
-// is positive.
+// hasher reads files for Find. A read is abandonable — when it stalls, or when the
+// scan is stopped — and reports its progress while it goes.
+type hasher struct {
+	stall  time.Duration
+	cancel <-chan struct{}
+	onRead func(read int64) // bytes read so far, about every pollInterval
+}
+
+// hash returns the SHA-256 of the file, or of its first limit bytes when limit is
+// not negative.
 //
-// When stall is positive the read runs on its own goroutine and is abandoned if it
-// stops delivering bytes — the same treatment, and the same unavoidable goroutine
-// leak, as flatten.Copy. A read parked in a disk retry cannot be cancelled; it can
-// only be walked away from. A closed cancel walks away the same way.
-func hashFile(path string, limit int64, stall time.Duration, cancel <-chan struct{}) (string, error) {
-	select {
-	case <-cancel:
+// When stall is positive or cancel is set, the read runs on its own goroutine and is
+// abandoned if it stops delivering bytes or the scan is stopped — the same
+// treatment, and the same unavoidable goroutine leak, as flatten.Copy. A read parked
+// in a disk retry cannot be cancelled; it can only be walked away from.
+func (h hasher) hash(path string, limit int64) (string, error) {
+	if closed(h.cancel) {
 		return "", errCanceled // stopped before this file began; do not open it
-	default:
 	}
-	if stall <= 0 && cancel == nil {
+	if h.stall <= 0 && h.cancel == nil {
 		return hashDirect(path, limit)
 	}
 
@@ -319,14 +372,18 @@ func hashFile(path string, limit int64, stall time.Duration, cancel <-chan struc
 		select {
 		case o := <-done:
 			return o.sum, o.err
-		case <-cancel:
+		case <-h.cancel:
 			abandon()
 			return "", errCanceled
 		case now := <-t.C:
-			if n := read.Load(); n != last {
+			n := read.Load()
+			if n != last {
 				last, lastMoved = n, now
 			}
-			if idle := now.Sub(lastMoved); stall > 0 && idle >= stall {
+			if h.onRead != nil {
+				h.onRead(n)
+			}
+			if idle := now.Sub(lastMoved); h.stall > 0 && idle >= h.stall {
 				abandon()
 				return "", &StallError{After: idle}
 			}
@@ -345,7 +402,7 @@ func hashDirect(path string, limit int64) (string, error) {
 
 func hashReader(f io.Reader, limit int64, onRead func(int64)) (string, error) {
 	var r io.Reader = f
-	if limit > 0 {
+	if limit >= 0 {
 		r = io.LimitReader(f, limit)
 	}
 	h := sha256.New()
