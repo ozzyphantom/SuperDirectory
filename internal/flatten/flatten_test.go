@@ -2,6 +2,7 @@ package flatten
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -356,7 +357,7 @@ func TestStreamCopyReportsEveryChunk(t *testing.T) {
 	buf := make([]byte, streamChunk)
 
 	var reports []int64
-	if err := streamCopy(io.Discard, src, buf, func(n int64) { reports = append(reports, n) }); err != nil {
+	if err := streamCopy(io.Discard, src, buf, func(n int64) { reports = append(reports, n) }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(reports) != chunks {
@@ -564,5 +565,129 @@ func TestLabelsAreDistinctIgnoringCase(t *testing.T) {
 	want := []string{"Photos", "photos_2", "root", "Photos_3"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("Labels = %v, want %v", got, want)
+	}
+}
+
+// TestResumeSkipsWhatIsAlreadyThere is the point of resume: a copy stopped at file
+// 1084 of 11041 picks up at 1084, and a file changed since is copied again.
+func TestResumeSkipsWhatIsAlreadyThere(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, "a.txt", "b.txt", "c.txt")
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if res := Execute(target, items, Options{}); res.Copied != 3 {
+		t.Fatalf("first run copied %d", res.Copied)
+	}
+
+	// Change one source file, as an edit between runs would.
+	changed := filepath.Join(root, "b.txt")
+	os.WriteFile(changed, []byte("b, edited and longer"), 0o644)
+	items, _ = Plan(root, nil)
+
+	res := Execute(target, items, Options{Resume: true})
+	if res.Existing != 2 || res.Copied != 1 {
+		t.Errorf("resume: existing %d, copied %d; want 2 and 1", res.Existing, res.Copied)
+	}
+	if res.Outcomes[1] != Copied || res.Outcomes[0] != Existing {
+		t.Errorf("outcomes %v", res.Outcomes)
+	}
+	if got, _ := os.ReadFile(filepath.Join(target, "b.txt")); string(got) != "b, edited and longer" {
+		t.Errorf("the edited file was not copied again: %q", got)
+	}
+}
+
+// TestPauseIsNotAStall: a copy paused for longer than the stall timeout must not
+// abandon anything, between files or in the middle of one.
+func TestPauseIsNotAStall(t *testing.T) {
+	defer swapPollInterval(t, 5*time.Millisecond)()
+
+	root := t.TempDir()
+	writeTree(t, root, "a.txt", "b.txt")
+	items, _ := Plan(root, nil)
+	target := t.TempDir()
+
+	p := &Pauser{}
+	p.Toggle()
+	done := make(chan Result, 1)
+	go func() { done <- Execute(target, items, Options{StallTimeout: 30 * time.Millisecond, Pause: p}) }()
+
+	time.Sleep(150 * time.Millisecond)
+	if entries, _ := os.ReadDir(target); len(entries) != 0 {
+		t.Fatalf("copied %d files while paused", len(entries))
+	}
+	if !p.Paused() || p.Since().IsZero() {
+		t.Error("Paused/Since")
+	}
+	p.Toggle()
+	select {
+	case res := <-done:
+		if len(res.Failures) != 0 || res.Copied != 2 {
+			t.Errorf("after resuming: %d copied, failures %v", res.Copied, res.Failures)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the copy never resumed")
+	}
+}
+
+func TestVerifyCatchesABadCopy(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "copy.bin")
+	os.WriteFile(dst, []byte("not what was written"), 0o644)
+	j := &copyJob{dst: dst, stopped: make(chan struct{})}
+	sum := sha256.Sum256([]byte("what was written"))
+	var ve VerifyError
+	if err := j.check(sum[:]); !errors.As(err, &ve) {
+		t.Errorf("err = %v, want VerifyError", err)
+	}
+	good := sha256.Sum256([]byte("not what was written"))
+	if err := j.check(good[:]); err != nil {
+		t.Errorf("a matching copy failed: %v", err)
+	}
+
+	// End to end: a verified copy of real files succeeds and says so.
+	root := t.TempDir()
+	writeTree(t, root, "a.txt", "deep/b.txt")
+	items, _ := Plan(root, nil)
+	if res := Execute(t.TempDir(), items, Options{Verify: true, StallTimeout: time.Minute}); res.Copied != 2 || len(res.Failures) != 0 {
+		t.Errorf("verified copy: %+v", res)
+	}
+}
+
+// TestCloneOrCopy: where the filesystem clones (APFS here, Btrfs/XFS on Linux) the
+// file is cloned; elsewhere it is copied. Either way the copy is exact and keeps
+// its time.
+func TestCloneOrCopy(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, "photo.jpg")
+	old := time.Date(2019, 7, 14, 10, 0, 0, 0, time.Local)
+	os.Chtimes(filepath.Join(root, "photo.jpg"), old, old)
+	items, _ := Plan(root, nil)
+	target := t.TempDir()
+
+	res := Execute(target, items, Options{Clone: true})
+	if len(res.Failures) != 0 || res.Copied+res.Cloned != 1 {
+		t.Fatalf("result %+v", res)
+	}
+	t.Logf("outcome: %v (cloned=%d)", res.Outcomes[0], res.Cloned)
+	got, _ := os.ReadFile(filepath.Join(target, "photo.jpg"))
+	if string(got) != "photo.jpg" {
+		t.Errorf("contents %q", got)
+	}
+	if info, _ := os.Stat(filepath.Join(target, "photo.jpg")); !info.ModTime().Equal(old) {
+		t.Errorf("time %v, want %v", info.ModTime(), old)
+	}
+}
+
+func TestFreeSpaceAndSameVolume(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	free, err := FreeSpace(filepath.Join(a, "not", "yet", "made"))
+	if err != nil || free <= 0 {
+		t.Errorf("FreeSpace = %d, %v", free, err)
+	}
+	if !SameVolume(a, filepath.Join(b, "new")) {
+		t.Error("two temporary folders should share a volume")
 	}
 }
