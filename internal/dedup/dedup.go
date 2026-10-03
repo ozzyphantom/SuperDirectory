@@ -208,7 +208,7 @@ func Find(items []flatten.Item, opts Options) Result {
 				continue
 			}
 			if partialIsWhole {
-				res.add(sameHead, g.size)
+				res.add(items, sameHead, g.size)
 				continue
 			}
 			// Stage 3: the whole file, only for the few that still match.
@@ -224,7 +224,7 @@ func Find(items []flatten.Item, opts Options) Result {
 				}
 			}
 			for _, identical := range byFull {
-				res.add(identical, g.size)
+				res.add(items, identical, g.size)
 			}
 		}
 	}
@@ -247,17 +247,23 @@ func closed(c <-chan struct{}) bool {
 	}
 }
 
-// add records a group of identical files, keeping the earliest in plan order. That
-// matters: the plan gave the first occurrence the unsuffixed name, so keeping it
-// leaves "beach.jpg" behind rather than "beach_1.jpg".
-func (r *Result) add(identical []int, size int64) {
+// add records a group of identical files. pickKeeper decides which one is copied;
+// the rest are skipped.
+func (r *Result) add(items []flatten.Item, identical []int, size int64) {
 	if len(identical) < 2 {
 		return
 	}
 	sort.Ints(identical)
-	r.Sets = append(r.Sets, Set{Size: size, Keep: identical[0], Skip: identical[1:]})
-	r.Files += len(identical) - 1
-	r.Bytes += size * int64(len(identical)-1)
+	keep := pickKeeper(items, identical)
+	skip := make([]int, 0, len(identical)-1)
+	for _, i := range identical {
+		if i != keep {
+			skip = append(skip, i)
+		}
+	}
+	r.Sets = append(r.Sets, Set{Size: size, Keep: keep, Skip: skip})
+	r.Files += len(skip)
+	r.Bytes += size * int64(len(skip))
 }
 
 // Filter returns the plan with every duplicate removed, preserving order.

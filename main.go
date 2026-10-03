@@ -347,7 +347,7 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 	err := wizard.Menu(huh.NewSelect[string]().
 		Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
 			res.Files, humanBytes(res.Bytes), len(res.Sets))).
-		Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
+		Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies one of each set: the name that is not a copy,\nnearest the top of the source.").
 		Options(
 			huh.NewOption("Skip duplicates — copy one of each set", "skip"),
 			huh.NewOption("Copy everything", "all"),

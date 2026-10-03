@@ -198,7 +198,15 @@ On a folder of eleven thousand photographs this typically reads a few hundred.
     Cancel
 ```
 
-Two behaviors worth knowing. The survivor of each set is the **first in walk order**, which is lexical — so if you have `Trip/beach.jpg` and `Backup/beach copy.jpg`, the one kept is `Backup/beach copy.jpg`. There is no way to know which is the original. And a file that cannot be read is never called a duplicate; it is reported and copied.
+Which copy survives:
+
+1. A name that does not read as a copy. `beach copy.jpg`, `beach - Copy.jpg`, `beach (1).jpg`, `Copy of beach.jpg`, and `beach_1.jpg` beside `beach.jpg` all lose to `beach.jpg`.
+2. Then the shallowest path, nearest the top of the source.
+3. Then walk order, which is lexical.
+
+So `Trip/beach.jpg` survives over `Backup/beach copy.jpg`, even though `Backup` sorts first. After the duplicates are dropped, names are assigned again, so a survivor never keeps a `_1` suffix it only needed beside its twin.
+
+A file that cannot be read is never called a duplicate; it is reported and copied.
 
 ## When a file will not read
 
