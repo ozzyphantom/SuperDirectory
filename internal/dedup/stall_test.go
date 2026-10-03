@@ -16,7 +16,7 @@ import (
 //
 // A FIFO is the only portable way to make a read block on demand. It is not a perfect
 // stand-in for a regular file on a failing disk — a FIFO is pollable, so closing it
-// unblocks the reader — but it exercises everything the hasher controls: noticing the
+// unblocks the reader — but it exercises everything the reader controls: noticing the
 // stall, closing the descriptor, and returning rather than waiting forever.
 func TestHashStallIsAbandoned(t *testing.T) {
 	defer swapPollInterval(t, 5*time.Millisecond)()
@@ -27,7 +27,7 @@ func TestHashStallIsAbandoned(t *testing.T) {
 		t.Skipf("mkfifo unsupported: %v", err)
 	}
 
-	// The hasher's goroutine parks in os.Open until a writer arrives. Release it, or it
+	// The reader's goroutine parks in os.Open until a writer arrives. Release it, or it
 	// holds the FIFO for the life of the test binary. Opening the write end succeeds
 	// immediately because a reader is already waiting — which is the whole problem.
 	defer func() {
@@ -37,7 +37,7 @@ func TestHashStallIsAbandoned(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := hasher{stall: 60 * time.Millisecond}.hash(fifo, -1)
+	_, err := reader{stall: 60 * time.Millisecond}.hash(fifo, -1)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("hash took %v to give up", elapsed)
 	}
@@ -120,7 +120,7 @@ func TestHashCancelIsAbandoned(t *testing.T) {
 	time.AfterFunc(30*time.Millisecond, func() { close(cancel) })
 
 	start := time.Now()
-	_, err := hasher{cancel: cancel}.hash(fifo, -1) // stall guard off: cancel alone must do it
+	_, err := reader{cancel: cancel}.hash(fifo, -1) // stall guard off: cancel alone must do it
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("hash took %v to stop", elapsed)
 	}
@@ -152,7 +152,7 @@ func TestLongReadReportsBytes(t *testing.T) {
 	}()
 
 	var seen []int64
-	h := hasher{stall: time.Second, onRead: func(n int64) { seen = append(seen, n) }}
+	h := reader{stall: time.Second, onRead: func(n int64) { seen = append(seen, n) }}
 	if _, err := h.hash(fifo, -1); err != nil {
 		t.Fatal(err)
 	}
