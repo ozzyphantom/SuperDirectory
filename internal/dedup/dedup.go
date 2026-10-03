@@ -18,6 +18,7 @@ package dedup
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,6 +50,10 @@ type Options struct {
 	// size with another — are ever hashed, so Total is usually far below the number
 	// of files in the plan.
 	OnProgress func(Progress)
+
+	// Cancel, once closed, stops the scan: the read in flight is abandoned and Find
+	// returns at once with Result.Canceled set. A nil channel never cancels.
+	Cancel <-chan struct{}
 }
 
 // Progress reports how far the hashing has got.
@@ -77,6 +82,10 @@ type Result struct {
 	// could not be, which are treated as unique.
 	Hashed     int
 	Unreadable []string
+
+	// Canceled reports that Options.Cancel closed before the scan finished. The
+	// sets found so far are incomplete and should not be applied.
+	Canceled bool
 }
 
 // Find groups the plan's items by content. It never modifies the plan; pass the
@@ -114,7 +123,11 @@ func Find(items []flatten.Item, opts Options) Result {
 		if opts.OnProgress != nil {
 			opts.OnProgress(Progress{Done: done, Total: total, Current: baseName(items[idx].Src)})
 		}
-		sum, err := hashFile(items[idx].Src, limit, opts.StallTimeout)
+		sum, err := hashFile(items[idx].Src, limit, opts.StallTimeout, opts.Cancel)
+		if errors.Is(err, errCanceled) {
+			res.Canceled = true
+			return "", false
+		}
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, items[idx].Src)
 			return "", false
@@ -135,6 +148,9 @@ func Find(items []flatten.Item, opts Options) Result {
 		for _, idx := range group {
 			sum, ok := hash(idx, limit)
 			done++
+			if res.Canceled {
+				return res
+			}
 			if ok {
 				byPartial[sum] = append(byPartial[sum], idx)
 			}
@@ -151,8 +167,12 @@ func Find(items []flatten.Item, opts Options) Result {
 			// Stage 3: the whole file, only for the few that still match.
 			byFull := map[string][]int{}
 			for _, idx := range sameHead {
-				sum, ok := hashFile2(items[idx].Src, opts.StallTimeout)
-				if !ok {
+				sum, err := hashFile(items[idx].Src, -1, opts.StallTimeout, opts.Cancel)
+				if errors.Is(err, errCanceled) {
+					res.Canceled = true
+					return res
+				}
+				if err != nil {
 					res.Unreadable = append(res.Unreadable, items[idx].Src)
 					continue
 				}
@@ -222,11 +242,6 @@ func baseName(p string) string {
 	return p
 }
 
-func hashFile2(path string, stall time.Duration) (string, bool) {
-	sum, err := hashFile(path, -1, stall)
-	return sum, err == nil
-}
-
 // StallError reports a file abandoned during hashing.
 type StallError struct{ After time.Duration }
 
@@ -234,15 +249,23 @@ func (e *StallError) Error() string {
 	return fmt.Sprintf("no data for %s while hashing", e.After)
 }
 
+// errCanceled is what hashFile returns when Options.Cancel closes mid-read.
+var errCanceled = errors.New("scan canceled")
+
 // hashFile returns the SHA-256 of the file, or of its first limit bytes when limit
 // is positive.
 //
 // When stall is positive the read runs on its own goroutine and is abandoned if it
 // stops delivering bytes — the same treatment, and the same unavoidable goroutine
 // leak, as flatten.Copy. A read parked in a disk retry cannot be cancelled; it can
-// only be walked away from.
-func hashFile(path string, limit int64, stall time.Duration) (string, error) {
-	if stall <= 0 {
+// only be walked away from. A closed cancel walks away the same way.
+func hashFile(path string, limit int64, stall time.Duration, cancel <-chan struct{}) (string, error) {
+	select {
+	case <-cancel:
+		return "", errCanceled // stopped before this file began; do not open it
+	default:
+	}
+	if stall <= 0 && cancel == nil {
 		return hashDirect(path, limit)
 	}
 
@@ -279,6 +302,16 @@ func hashFile(path string, limit int64, stall time.Duration) (string, error) {
 		done <- outcome{sum, err}
 	}()
 
+	abandon := func() {
+		aborted.Store(true)
+		mu.Lock()
+		f := open
+		mu.Unlock()
+		if f != nil {
+			f.Close()
+		}
+	}
+
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	last, lastMoved := int64(0), time.Now()
@@ -286,18 +319,15 @@ func hashFile(path string, limit int64, stall time.Duration) (string, error) {
 		select {
 		case o := <-done:
 			return o.sum, o.err
+		case <-cancel:
+			abandon()
+			return "", errCanceled
 		case now := <-t.C:
 			if n := read.Load(); n != last {
 				last, lastMoved = n, now
 			}
-			if idle := now.Sub(lastMoved); idle >= stall {
-				aborted.Store(true)
-				mu.Lock()
-				f := open
-				mu.Unlock()
-				if f != nil {
-					f.Close()
-				}
+			if idle := now.Sub(lastMoved); stall > 0 && idle >= stall {
+				abandon()
 				return "", &StallError{After: idle}
 			}
 		}

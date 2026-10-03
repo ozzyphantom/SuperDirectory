@@ -409,3 +409,26 @@ func swapPollInterval(t *testing.T, d time.Duration) func() {
 	pollInterval = d
 	return func() { pollInterval = old }
 }
+
+// TestCancelBeforeStartCopiesNothing: a stop that arrives before the first file means
+// no file is started, nothing is reported as failed, and the target stays empty.
+func TestCancelBeforeStartCopiesNothing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Plan(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel := make(chan struct{})
+	close(cancel)
+
+	target := t.TempDir()
+	if f := Copy(target, items, Options{Cancel: cancel}); len(f) != 0 {
+		t.Fatalf("failures = %v, want none: nothing was in flight", f)
+	}
+	if entries, _ := os.ReadDir(target); len(entries) != 0 {
+		t.Errorf("target holds %d entries, want none", len(entries))
+	}
+}

@@ -15,12 +15,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/huh"
@@ -48,16 +51,35 @@ func main() {
 		runInspect(os.Args[2:])
 		return
 	}
+	os.Exit(run())
+}
 
+// outcome is how one pass through the wizard and the copy ended.
+type outcome int
+
+const (
+	finished    outcome = iota // the copy ran to the end
+	abandoned                  // the user backed out before anything was copied
+	interrupted                // Ctrl+C during the scan or the copy
+	failed                     // an error stopped the run
+)
+
+// run drives the wizard-and-copy loop and returns the process exit code.
+func run() int {
 	printIntro()
 	for {
-		target, completed := runOnce()
-		if !completed {
+		target, how := runOnce()
+		switch how {
+		case abandoned:
 			fmt.Println("\n  Exiting.")
-			return
+			return 0
+		case interrupted:
+			return 130 // the shell convention for a run stopped by Ctrl+C
+		case failed:
+			return 1
 		}
 		if !postCompletion(target) {
-			return
+			return 0
 		}
 		fmt.Println()
 	}
@@ -69,16 +91,16 @@ func printIntro() {
 	fmt.Println("  " + dim.Render("Flatten a nested tree, or sort it by file type.  ") + key.Render("Ctrl+C") + dim.Render(" exits anytime."))
 }
 
-// runOnce drives one full run. Returns the created target directory and
-// whether it completed (false means the user aborted).
-func runOnce() (string, bool) {
+// runOnce drives one full run. It returns the target directory and how the run
+// ended.
+func runOnce() (string, outcome) {
 	res, err := wizard.Run()
 	if err != nil {
 		if wizard.IsAbort(err) {
-			return "", false
+			return "", abandoned
 		}
 		fmt.Fprintln(os.Stderr, "\n  "+red.Render("Error: ")+err.Error())
-		return "", false
+		return "", failed
 	}
 
 	// Both planners emit []flatten.Item; only the destination layout differs.
@@ -92,28 +114,37 @@ func runOnce() (string, bool) {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "  "+red.Render("Error building plan: ")+err.Error())
-		return "", false
+		return "", failed
 	}
+	_, statErr := os.Stat(res.Target)
+	createdTarget := errors.Is(statErr, os.ErrNotExist)
 	if err := os.MkdirAll(res.Target, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "  "+red.Render("Error creating target: ")+err.Error())
-		return "", false
+		return "", failed
 	}
 
 	fmt.Println()
 	if len(items) == 0 {
 		fmt.Println("  " + dim.Render("No files found to copy."))
-		return res.Target, true
+		return res.Target, finished
 	}
 
+	// From here on Ctrl+C stops cleanly instead of killing the process mid-write.
+	stop, release := catchInterrupt()
+	defer release()
+
 	if res.FindDuplicates {
-		kept, ok := resolveDuplicates(items)
-		if !ok {
-			return "", false // user cancelled at the duplicates prompt
+		kept, how := resolveDuplicates(items, stop)
+		if how != finished {
+			if createdTarget {
+				os.Remove(res.Target) // still empty: nothing was copied into it
+			}
+			return "", how
 		}
 		items = kept
 		if len(items) == 0 {
 			fmt.Println("  " + dim.Render("Nothing left to copy."))
-			return res.Target, true
+			return res.Target, finished
 		}
 	}
 
@@ -124,29 +155,104 @@ func runOnce() (string, bool) {
 	var last flatten.Progress
 	failures := flatten.Copy(res.Target, items, flatten.Options{
 		StallTimeout: flatten.DefaultStallTimeout,
+		Cancel:       stop,
 		OnProgress: func(p flatten.Progress) {
 			last = p
 			drawer.draw(p)
 		},
 	})
-	if len(failures) > 0 {
-		fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
-		for _, f := range failures {
-			fmt.Printf("    %s  %s\n       %s\n", red.Render("✗"), f.Src, dim.Render(f.Err.Error()))
-		}
+	if isClosed(stop) {
+		reportStopped(res.Target, total, last, failures)
+		return "", interrupted
 	}
+	printFailures(failures)
 	fmt.Printf("\n  %s  %s in %s  ·  %s average\n",
 		green.Render(bold.Render("Finished!")),
 		bold.Render(humanBytes(last.Bytes)),
 		humanDuration(last.Elapsed),
 		bold.Render(humanRate(last.Rate())))
-	return res.Target, true
+	return res.Target, finished
+}
+
+func printFailures(failures []flatten.Failure) {
+	if len(failures) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
+	for _, f := range failures {
+		fmt.Printf("    %s  %s\n       %s\n", red.Render("✗"), f.Src, dim.Render(f.Err.Error()))
+	}
+}
+
+// reportStopped says exactly what a Ctrl+C left behind: how many files arrived, and
+// that the file it interrupted is gone rather than sitting truncated in the output.
+func reportStopped(target string, total int, last flatten.Progress, failures []flatten.Failure) {
+	var partial string
+	var real []flatten.Failure
+	for _, f := range failures {
+		if errors.Is(f.Err, flatten.ErrCanceled) {
+			partial = filepath.Base(f.Src)
+			continue
+		}
+		real = append(real, f)
+	}
+	fmt.Println()
+	printFailures(real)
+	fmt.Printf("\n  %s  %d of %d file(s) copied into %s\n",
+		orange.Render(bold.Render("Stopped.")), last.Done-len(real), total, orange.Render(target))
+	if partial != "" {
+		fmt.Println("  " + dim.Render("The partial copy of "+partial+" was removed."))
+	}
+}
+
+// catchInterrupt turns Ctrl+C into a request to stop cleanly, for the stretch of the
+// run that reads and writes files. The first press closes stop: the scan or the copy
+// abandons its file in flight, removes any partial destination, and returns. A second
+// press exits at once, for a stop that does not come quickly.
+//
+// Before this, the default handler killed the process mid-write and left a truncated
+// file in the superdirectory under the source's own name. Outside this stretch the
+// terminal belongs to a Bubble Tea screen in raw mode, which reads Ctrl+C as a key.
+func catchInterrupt() (stop <-chan struct{}, release func()) {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	ch := make(chan struct{})
+	quit := make(chan struct{})
+	go func() {
+		select {
+		case <-sig:
+			close(ch)
+		case <-quit:
+			return
+		}
+		select {
+		case <-sig:
+			fmt.Println()
+			os.Exit(130)
+		case <-quit:
+		}
+	}()
+	return ch, func() {
+		signal.Stop(sig)
+		close(quit)
+	}
+}
+
+// isClosed reports whether c has been closed, without blocking.
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveDuplicates scans the plan for byte-identical files and, if any are found,
-// asks whether to skip them. It returns the plan to copy, and false if the user
-// cancelled outright.
-func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
+// asks whether to skip them. It returns the plan to copy and how the step ended:
+// abandoned if the user cancelled at the prompt, interrupted if Ctrl+C stopped the
+// scan.
+func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.Item, outcome) {
 	fmt.Printf("  %s\n", dim.Render("Looking for duplicate files…"))
 
 	var lastDraw time.Time
@@ -154,6 +260,7 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 		// The scan reads files. On the drive that motivated this, one of them may
 		// never read at all; the scan must not hang where the copy no longer does.
 		StallTimeout: flatten.DefaultStallTimeout,
+		Cancel:       stop,
 		OnProgress: func(p dedup.Progress) {
 			if p.Total == 0 {
 				return
@@ -168,6 +275,10 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 		},
 	})
 	fmt.Print("\r\033[K")
+	if res.Canceled {
+		fmt.Printf("  %s  %s\n", orange.Render(bold.Render("Stopped.")), dim.Render("Nothing was copied."))
+		return nil, interrupted
+	}
 
 	if len(res.Unreadable) > 0 {
 		fmt.Printf("  %s %d file(s) could not be read and are treated as unique.\n",
@@ -176,7 +287,7 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 	if res.Files == 0 {
 		fmt.Printf("  %s\n\n", dim.Render(fmt.Sprintf(
 			"No duplicates found (%d file(s) read).", res.Hashed)))
-		return items, true
+		return items, finished
 	}
 
 	var choice string
@@ -193,7 +304,7 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 			Value(&choice),
 	)).WithTheme(wizard.Theme())
 	if err := form.Run(); err != nil {
-		return nil, false // ctrl+c
+		return nil, abandoned // ctrl+c
 	}
 
 	switch choice {
@@ -201,11 +312,11 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 		out := dedup.Filter(items, res)
 		fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf(
 			"Skipping %d duplicate(s), saving %s.", res.Files, humanBytes(res.Bytes))))
-		return out, true
+		return out, finished
 	case "all":
-		return items, true
+		return items, finished
 	default:
-		return nil, false
+		return nil, abandoned
 	}
 }
 

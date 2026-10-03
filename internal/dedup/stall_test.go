@@ -37,7 +37,7 @@ func TestHashStallIsAbandoned(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := hashFile(fifo, -1, 60*time.Millisecond)
+	_, err := hashFile(fifo, -1, 60*time.Millisecond, nil)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("hashFile took %v to give up", elapsed)
 	}
@@ -98,4 +98,33 @@ func swapPollInterval(t *testing.T, d time.Duration) func() {
 	old := pollInterval
 	pollInterval = d
 	return func() { pollInterval = old }
+}
+
+// TestHashCancelIsAbandoned: Ctrl+C during a read that will never finish must return
+// at once rather than wait for a byte that is not coming.
+func TestHashCancelIsAbandoned(t *testing.T) {
+	defer swapPollInterval(t, 5*time.Millisecond)()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "stuck.bin")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	defer func() {
+		if w, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
+			w.Close()
+		}
+	}()
+
+	cancel := make(chan struct{})
+	time.AfterFunc(30*time.Millisecond, func() { close(cancel) })
+
+	start := time.Now()
+	_, err := hashFile(fifo, -1, 0, cancel) // stall guard off: cancel alone must do it
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("hashFile took %v to stop", elapsed)
+	}
+	if !errors.Is(err, errCanceled) {
+		t.Fatalf("err = %v, want errCanceled", err)
+	}
 }

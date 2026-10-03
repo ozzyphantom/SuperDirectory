@@ -193,6 +193,15 @@ type Options struct {
 	// gives up the kernel's copy_file_range for small files. You cannot both hand
 	// the copy to the kernel and watch it progress.
 	StallTimeout time.Duration
+
+	// Cancel, once closed, stops the copy. The file in flight is abandoned exactly
+	// as a stalled one is, its partial destination is removed, and it is returned as
+	// a Failure wrapping ErrCanceled. No further file is started. Files already
+	// copied stay where they are. A nil channel never cancels.
+	//
+	// Without this, Ctrl+C killed the process mid-write and left a truncated file in
+	// the superdirectory under the source's own name, looking complete.
+	Cancel <-chan struct{}
 }
 
 // StallError reports a file abandoned for producing no data.
@@ -208,6 +217,20 @@ func (e *StallError) Error() string {
 
 // errAborted is the sentinel a job returns when it notices it has been abandoned.
 var errAborted = errors.New("copy abandoned")
+
+// ErrCanceled marks the file that was in flight when Options.Cancel closed.
+var ErrCanceled = errors.New("copy stopped — partial file removed")
+
+// closed reports whether c has been closed, without blocking. A nil channel is
+// never closed.
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
 
 // Copy executes the plan into target. It never aborts on a single failure; instead
 // it collects and returns them so the caller can report at the end. A file that
@@ -240,6 +263,9 @@ func Copy(target string, items []Item, opts Options) []Failure {
 	}
 
 	for i, it := range items {
+		if closed(opts.Cancel) {
+			return failures
+		}
 		name := filepath.Base(it.Src)
 		cur = nil
 		report(i, name) // announce BEFORE touching the file
@@ -256,7 +282,7 @@ func Copy(target string, items []Item, opts Options) []Failure {
 		errc := make(chan error, 1) // buffered: an abandoned job must not block forever
 		go func() { errc <- job.run() }()
 
-		err := awaitFile(job, errc, opts.StallTimeout, func() { report(i, name) })
+		err := awaitFile(job, errc, opts.StallTimeout, opts.Cancel, func() { report(i, name) })
 
 		// Bytes that reached the device count toward throughput even if the file is
 		// then discarded: the drive did the work, and the rate should say so.
@@ -267,14 +293,18 @@ func Copy(target string, items []Item, opts Options) []Failure {
 			failures = append(failures, Failure{Src: it.Src, Err: err})
 			os.Remove(dst) // leave no truncated file behind
 		}
+		if errors.Is(err, ErrCanceled) {
+			return failures // the file never completed, so it is not reported done
+		}
 		report(i+1, name)
 	}
 	return failures
 }
 
 // awaitFile waits for the job, polling its byte counter so progress is visible
-// through a long file and a stall is noticed in a short one.
-func awaitFile(job *copyJob, errc <-chan error, stall time.Duration, tick func()) error {
+// through a long file and a stall is noticed in a short one. A closed cancel
+// abandons the job the same way a stall does.
+func awaitFile(job *copyJob, errc <-chan error, stall time.Duration, cancel <-chan struct{}, tick func()) error {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 
@@ -283,6 +313,16 @@ func awaitFile(job *copyJob, errc <-chan error, stall time.Duration, tick func()
 		select {
 		case err := <-errc:
 			return err
+		case <-cancel:
+			// A job that finished in the same instant keeps its result: discarding a
+			// complete file to honor a stop request would be perverse.
+			select {
+			case err := <-errc:
+				return err
+			default:
+			}
+			job.abort()
+			return ErrCanceled
 		case now := <-t.C:
 			if n := job.written.Load(); n != lastBytes {
 				lastBytes, lastMoved = n, now
@@ -413,7 +453,10 @@ func (j *copyJob) run() error {
 		return err
 	}
 	if !j.keep(out, false) {
+		// Abandoned between the check above and this open: Copy may already have
+		// removed the destination, and this open just recreated it, empty.
 		out.Close()
+		os.Remove(j.dst)
 		return errAborted
 	}
 

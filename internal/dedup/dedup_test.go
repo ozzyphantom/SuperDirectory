@@ -203,3 +203,23 @@ func TestProgressCountsOnlyCandidates(t *testing.T) {
 		}
 	}
 }
+
+// TestFindCanceledReportsItAndOpensNothing: a stop requested before the scan starts
+// reads no file and says so, so the caller can tell an interrupted scan from a clean
+// "no duplicates".
+func TestFindCanceledReportsItAndOpensNothing(t *testing.T) {
+	dir := t.TempDir()
+	photo := make([]byte, 4096)
+	items := plan(write(t, dir, "a.bin", photo), write(t, dir, "b.bin", photo))
+
+	cancel := make(chan struct{})
+	close(cancel)
+	res := Find(items, Options{Cancel: cancel})
+
+	if !res.Canceled {
+		t.Fatal("Canceled = false after a stop")
+	}
+	if res.Hashed != 0 || len(res.Sets) != 0 {
+		t.Errorf("Hashed = %d, Sets = %d; a canceled scan must read and claim nothing", res.Hashed, len(res.Sets))
+	}
+}

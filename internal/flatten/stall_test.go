@@ -168,3 +168,57 @@ func TestStallTimeoutDoesNotFireOnASlowButMovingFile(t *testing.T) {
 		t.Errorf("landed %d bytes, want %d", info.Size(), 12*1024)
 	}
 }
+
+// TestCancelStopsTheFileInFlight models Ctrl+C in the middle of a file. The stall
+// guard is off, so this proves cancellation does not lean on it. The partial
+// destination must go, the file must be named as stopped, and nothing after it may
+// start.
+func TestCancelStopsTheFileInFlight(t *testing.T) {
+	defer swapPollInterval(t, 5*time.Millisecond)()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "a-big.bin")
+	mkfifo(t, fifo)
+	later := filepath.Join(dir, "b-later.txt")
+	if err := os.WriteFile(later, []byte("never reached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliver a little, then go quiet: a big file part-way through.
+	writerReady := make(chan *os.File, 1)
+	go func() {
+		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			writerReady <- nil
+			return
+		}
+		w.Write([]byte("the first part of a large file"))
+		writerReady <- w
+	}()
+	defer func() {
+		if w := <-writerReady; w != nil {
+			w.Close()
+		}
+	}()
+
+	cancel := make(chan struct{})
+	time.AfterFunc(40*time.Millisecond, func() { close(cancel) })
+
+	target := t.TempDir()
+	items := []Item{{Src: fifo, Dst: "a-big.bin"}, {Src: later, Dst: "b-later.txt"}}
+
+	start := time.Now()
+	failures := Copy(target, items, Options{Cancel: cancel})
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Copy took %v to stop", elapsed)
+	}
+	if len(failures) != 1 || !errors.Is(failures[0].Err, ErrCanceled) {
+		t.Fatalf("failures = %v, want exactly the in-flight file marked ErrCanceled", failures)
+	}
+	if _, err := os.Stat(filepath.Join(target, "a-big.bin")); !os.IsNotExist(err) {
+		t.Error("the partial file survived the stop; it must be removed")
+	}
+	if _, err := os.Stat(filepath.Join(target, "b-later.txt")); !os.IsNotExist(err) {
+		t.Error("a file was started after the stop")
+	}
+}
