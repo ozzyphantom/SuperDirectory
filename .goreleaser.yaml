@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# Releases: push a tag like v0.1.0 and .github/workflows/release.yml runs this.
+# RELEASING.md lists the secrets it reads and what each one switches on.
+version: 2
+project_name: superdirectory
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: superdirectory
+    main: .
+    binary: superdirectory
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}" # the same commit builds the same bytes
+
+# Signs and notarizes the macOS binaries with a Developer ID, from any runner.
+# Off until MACOS_SIGN_P12 holds a value; an unsigned release still builds.
+notarize:
+  macos:
+    - enabled: '{{ ne (index .Env "MACOS_SIGN_P12") "" }}'
+      ids: [superdirectory]
+      sign:
+        certificate: '{{ index .Env "MACOS_SIGN_P12" }}'
+        password: '{{ index .Env "MACOS_SIGN_PASSWORD" }}'
+      notarize:
+        issuer_id: '{{ index .Env "MACOS_NOTARY_ISSUER_ID" }}'
+        key_id: '{{ index .Env "MACOS_NOTARY_KEY_ID" }}'
+        key: '{{ index .Env "MACOS_NOTARY_KEY" }}'
+        wait: true
+        timeout: 20m
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+# brew install ozzyphantom/tap/superdirectory. Uploads only when
+# HOMEBREW_TAP_GITHUB_TOKEN holds a value. No quarantine workaround: the binaries
+# are notarized instead, so Gatekeeper is satisfied rather than bypassed.
+homebrew_casks:
+  - name: superdirectory
+    binaries: [superdirectory]
+    homepage: https://github.com/ozzyphantom/SuperDirectory
+    description: Copy nested folders into one folder, by type, by date taken, or flattened below a depth
+    license: MIT
+    repository:
+      owner: ozzyphantom
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+
+release:
+  github:
+    owner: ozzyphantom
+    name: SuperDirectory
+  prerelease: auto
+
+changelog:
+  sort: asc
