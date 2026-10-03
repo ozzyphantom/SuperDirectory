@@ -326,7 +326,7 @@ func (m *model) renderNode(n *node, focused bool) string {
 	// whose count has not arrived — a zero would be a lie, not a placeholder.
 	count := ""
 	if n.counted {
-		count = dimStyle.Render(fmt.Sprintf("  (%d files, %d dirs)", n.fileCount, n.subdirCount))
+		count = dimStyle.Render("  (" + plural(n.fileCount, "file") + ", " + plural(n.subdirCount, "dir") + ")")
 	}
 
 	pointer := "  "
@@ -528,6 +528,14 @@ func loadChildren(n *node) {
 	}
 	sort.Slice(kids, func(i, j int) bool { return kids[i].name < kids[j].name })
 	n.children = kids
+}
+
+// plural renders n with its noun: "1 file", "3 files".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // countChildren reports what the copy would actually take from dir, so the

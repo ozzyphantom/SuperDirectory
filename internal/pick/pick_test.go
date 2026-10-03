@@ -353,3 +353,11 @@ func TestCountsAreMemoizedAcrossNavigation(t *testing.T) {
 		t.Error("re-entering a visited directory should need no background work")
 	}
 }
+
+func TestCountAgreesInNumber(t *testing.T) {
+	for n, want := range map[int]string{1: "1 subfolder", 2: "2 subfolders", 0: "0 subfolders"} {
+		if got := count(n, "subfolder"); got != want {
+			t.Errorf("count(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

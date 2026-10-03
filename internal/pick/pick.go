@@ -293,7 +293,7 @@ func (m *model) renderItem(i int) string {
 	}
 	sub := ""
 	if it.subdirs > 0 {
-		sub = dimStyle.Render(fmt.Sprintf("  (%d subfolders)", it.subdirs))
+		sub = dimStyle.Render("  (" + count(it.subdirs, "subfolder") + ")")
 	}
 	arrow := dimStyle.Render("›")
 	return "  " + pointer + arrow + " " + it.name + sub + "\n"
@@ -524,6 +524,14 @@ func countSubdirs(dir string) int {
 		}
 	}
 	return n
+}
+
+// count renders n with its noun: "1 subfolder", "3 subfolders".
+func count(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // singleRune reports whether msg is a single printable rune keypress, and
