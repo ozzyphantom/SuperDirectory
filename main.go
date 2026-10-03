@@ -15,16 +15,23 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/extract"
@@ -43,21 +50,90 @@ var (
 	key    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00b4d8")).Bold(true)
 )
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "inspect" {
-		runInspect(os.Args[2:])
-		return
-	}
+// version is stamped at release: go build -ldflags "-X main.version=1.2.0".
+var version = "dev"
 
+func main() {
+	if len(os.Args) > 1 {
+		os.Exit(command(os.Args[1:], os.Stdout, os.Stderr))
+	}
+	// The wizard draws on stdout and stderr and reads keys from stdin. Without a
+	// terminal on all three, every screen failed at once and the app reported a
+	// clean exit, having done nothing and said nothing.
+	for _, f := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
+		if !term.IsTerminal(f.Fd()) {
+			fmt.Fprintln(os.Stderr, "superdirectory: the wizard needs a terminal. Run it in one, or see --help.")
+			os.Exit(1)
+		}
+	}
+	os.Exit(run())
+}
+
+const usage = `SuperDirectory — flatten a nested tree, or sort it by file type.
+
+Usage:
+  superdirectory               start the interactive wizard (needs a terminal)
+  superdirectory inspect DIR   show the MIME type and title of each file in DIR
+  superdirectory --version     print the version
+  superdirectory --help        print this help
+`
+
+// command runs a non-interactive invocation and returns the exit code.
+func command(args []string, out, errOut io.Writer) int {
+	switch args[0] {
+	case "inspect":
+		runInspect(args[1:])
+		return 0
+	case "-h", "--help", "help":
+		fmt.Fprint(out, usage)
+		return 0
+	case "-v", "--version", "version":
+		fmt.Fprintln(out, "superdirectory", resolvedVersion())
+		return 0
+	default:
+		fmt.Fprintf(errOut, "superdirectory: unknown argument %q\n\n%s", args[0], usage)
+		return 2
+	}
+}
+
+// resolvedVersion is the stamped release version or, for a build from `go install
+// …@v1.2.0` or a git checkout, the module version Go recorded in the binary.
+func resolvedVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
+
+// outcome is how one pass through the wizard and the copy ended.
+type outcome int
+
+const (
+	finished    outcome = iota // the copy ran to the end
+	abandoned                  // the user backed out before anything was copied
+	interrupted                // Ctrl+C during the scan or the copy
+	failed                     // an error stopped the run
+)
+
+// run drives the wizard-and-copy loop and returns the process exit code.
+func run() int {
 	printIntro()
 	for {
-		target, completed := runOnce()
-		if !completed {
+		target, how := runOnce()
+		switch how {
+		case abandoned:
 			fmt.Println("\n  Exiting.")
-			return
+			return 0
+		case interrupted:
+			return 130 // the shell convention for a run stopped by Ctrl+C
+		case failed:
+			return 1
 		}
 		if !postCompletion(target) {
-			return
+			return 0
 		}
 		fmt.Println()
 	}
@@ -69,16 +145,16 @@ func printIntro() {
 	fmt.Println("  " + dim.Render("Flatten a nested tree, or sort it by file type.  ") + key.Render("Ctrl+C") + dim.Render(" exits anytime."))
 }
 
-// runOnce drives one full run. Returns the created target directory and
-// whether it completed (false means the user aborted).
-func runOnce() (string, bool) {
+// runOnce drives one full run. It returns the target directory and how the run
+// ended.
+func runOnce() (string, outcome) {
 	res, err := wizard.Run()
 	if err != nil {
 		if wizard.IsAbort(err) {
-			return "", false
+			return "", abandoned
 		}
 		fmt.Fprintln(os.Stderr, "\n  "+red.Render("Error: ")+err.Error())
-		return "", false
+		return "", failed
 	}
 
 	// Both planners emit []flatten.Item; only the destination layout differs.
@@ -92,28 +168,37 @@ func runOnce() (string, bool) {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "  "+red.Render("Error building plan: ")+err.Error())
-		return "", false
+		return "", failed
 	}
+	_, statErr := os.Stat(res.Target)
+	createdTarget := errors.Is(statErr, os.ErrNotExist)
 	if err := os.MkdirAll(res.Target, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "  "+red.Render("Error creating target: ")+err.Error())
-		return "", false
+		return "", failed
 	}
 
 	fmt.Println()
 	if len(items) == 0 {
 		fmt.Println("  " + dim.Render("No files found to copy."))
-		return res.Target, true
+		return res.Target, finished
 	}
 
+	// From here on Ctrl+C stops cleanly instead of killing the process mid-write.
+	stop, release := catchInterrupt()
+	defer release()
+
 	if res.FindDuplicates {
-		kept, ok := resolveDuplicates(items)
-		if !ok {
-			return "", false // user cancelled at the duplicates prompt
+		kept, how := resolveDuplicates(items, stop)
+		if how != finished {
+			if createdTarget {
+				os.Remove(res.Target) // still empty: nothing was copied into it
+			}
+			return "", how
 		}
 		items = kept
 		if len(items) == 0 {
 			fmt.Println("  " + dim.Render("Nothing left to copy."))
-			return res.Target, true
+			return res.Target, finished
 		}
 	}
 
@@ -124,29 +209,104 @@ func runOnce() (string, bool) {
 	var last flatten.Progress
 	failures := flatten.Copy(res.Target, items, flatten.Options{
 		StallTimeout: flatten.DefaultStallTimeout,
+		Cancel:       stop,
 		OnProgress: func(p flatten.Progress) {
 			last = p
 			drawer.draw(p)
 		},
 	})
-	if len(failures) > 0 {
-		fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
-		for _, f := range failures {
-			fmt.Printf("    %s  %s\n       %s\n", red.Render("✗"), f.Src, dim.Render(f.Err.Error()))
-		}
+	if isClosed(stop) {
+		reportStopped(res.Target, total, last, failures)
+		return "", interrupted
 	}
+	printFailures(failures)
 	fmt.Printf("\n  %s  %s in %s  ·  %s average\n",
 		green.Render(bold.Render("Finished!")),
 		bold.Render(humanBytes(last.Bytes)),
 		humanDuration(last.Elapsed),
 		bold.Render(humanRate(last.Rate())))
-	return res.Target, true
+	return res.Target, finished
+}
+
+func printFailures(failures []flatten.Failure) {
+	if len(failures) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s %d file(s) could not be copied:\n\n", red.Render("⚠"), len(failures))
+	for _, f := range failures {
+		fmt.Printf("    %s  %s\n       %s\n", red.Render("✗"), f.Src, dim.Render(f.Err.Error()))
+	}
+}
+
+// reportStopped says exactly what a Ctrl+C left behind: how many files arrived, and
+// that the file it interrupted is gone rather than sitting truncated in the output.
+func reportStopped(target string, total int, last flatten.Progress, failures []flatten.Failure) {
+	var partial string
+	var real []flatten.Failure
+	for _, f := range failures {
+		if errors.Is(f.Err, flatten.ErrCanceled) {
+			partial = filepath.Base(f.Src)
+			continue
+		}
+		real = append(real, f)
+	}
+	fmt.Println()
+	printFailures(real)
+	fmt.Printf("\n  %s  %d of %d file(s) copied into %s\n",
+		orange.Render(bold.Render("Stopped.")), last.Done-len(real), total, orange.Render(target))
+	if partial != "" {
+		fmt.Println("  " + dim.Render("The partial copy of "+partial+" was removed."))
+	}
+}
+
+// catchInterrupt turns Ctrl+C into a request to stop cleanly, for the stretch of the
+// run that reads and writes files. The first press closes stop: the scan or the copy
+// abandons its file in flight, removes any partial destination, and returns. A second
+// press exits at once, for a stop that does not come quickly.
+//
+// Before this, the default handler killed the process mid-write and left a truncated
+// file in the superdirectory under the source's own name. Outside this stretch the
+// terminal belongs to a Bubble Tea screen in raw mode, which reads Ctrl+C as a key.
+func catchInterrupt() (stop <-chan struct{}, release func()) {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	ch := make(chan struct{})
+	quit := make(chan struct{})
+	go func() {
+		select {
+		case <-sig:
+			close(ch)
+		case <-quit:
+			return
+		}
+		select {
+		case <-sig:
+			fmt.Println()
+			os.Exit(130)
+		case <-quit:
+		}
+	}()
+	return ch, func() {
+		signal.Stop(sig)
+		close(quit)
+	}
+}
+
+// isClosed reports whether c has been closed, without blocking.
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveDuplicates scans the plan for byte-identical files and, if any are found,
-// asks whether to skip them. It returns the plan to copy, and false if the user
-// cancelled outright.
-func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
+// asks whether to skip them. It returns the plan to copy and how the step ended:
+// abandoned if the user cancelled at the prompt, interrupted if Ctrl+C stopped the
+// scan.
+func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.Item, outcome) {
 	fmt.Printf("  %s\n", dim.Render("Looking for duplicate files…"))
 
 	var lastDraw time.Time
@@ -154,20 +314,24 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 		// The scan reads files. On the drive that motivated this, one of them may
 		// never read at all; the scan must not hang where the copy no longer does.
 		StallTimeout: flatten.DefaultStallTimeout,
+		Cancel:       stop,
 		OnProgress: func(p dedup.Progress) {
 			if p.Total == 0 {
 				return
 			}
-			if now := time.Now(); now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
+			now := time.Now()
+			if now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
 				return
-			} else {
-				lastDraw = now
 			}
-			fmt.Printf("\r  %s\033[K", dim.Render(fmt.Sprintf(
-				"hashing %d/%d candidates  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))))
+			lastDraw = now
+			fmt.Printf("\r%s\033[K", ansi.Truncate("  "+dim.Render(scanStatus(p)), termWidth(), "…"))
 		},
 	})
 	fmt.Print("\r\033[K")
+	if res.Canceled {
+		fmt.Printf("  %s  %s\n", orange.Render(bold.Render("Stopped.")), dim.Render("Nothing was copied."))
+		return nil, interrupted
+	}
 
 	if len(res.Unreadable) > 0 {
 		fmt.Printf("  %s %d file(s) could not be read and are treated as unique.\n",
@@ -176,24 +340,22 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 	if res.Files == 0 {
 		fmt.Printf("  %s\n\n", dim.Render(fmt.Sprintf(
 			"No duplicates found (%d file(s) read).", res.Hashed)))
-		return items, true
+		return items, finished
 	}
 
 	var choice string
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
-				res.Files, humanBytes(res.Bytes), len(res.Sets))).
-			Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
-			Options(
-				huh.NewOption("Skip duplicates — copy one of each set", "skip"),
-				huh.NewOption("Copy everything", "all"),
-				huh.NewOption("Cancel", "cancel"),
-			).
-			Value(&choice),
-	)).WithTheme(wizard.Theme())
-	if err := form.Run(); err != nil {
-		return nil, false // ctrl+c
+	err := wizard.Menu(huh.NewSelect[string]().
+		Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
+			res.Files, humanBytes(res.Bytes), len(res.Sets))).
+		Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
+		Options(
+			huh.NewOption("Skip duplicates — copy one of each set", "skip"),
+			huh.NewOption("Copy everything", "all"),
+			huh.NewOption("Cancel", "cancel"),
+		).
+		Value(&choice), false)
+	if err != nil {
+		return nil, abandoned // ctrl+c
 	}
 
 	switch choice {
@@ -201,12 +363,26 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 		out := dedup.Filter(items, res)
 		fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf(
 			"Skipping %d duplicate(s), saving %s.", res.Files, humanBytes(res.Bytes))))
-		return out, true
+		return out, finished
 	case "all":
-		return items, true
+		return items, finished
 	default:
-		return nil, false
+		return nil, abandoned
 	}
+}
+
+// scanStatus describes the duplicate scan's progress in one line.
+func scanStatus(p dedup.Progress) string {
+	if p.Phase == dedup.Sizing {
+		return fmt.Sprintf("checking sizes  %d/%d", p.Done, p.Total)
+	}
+	s := fmt.Sprintf("hashing %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	// A large file's byte count shows a long read moving; on a small file it would
+	// only flicker.
+	if p.Size >= 8<<20 {
+		s += fmt.Sprintf("  %s of %s", humanBytes(p.Read), humanBytes(p.Size))
+	}
+	return s
 }
 
 // postCompletion shows the after-copy menu. Open/reveal loop back to the menu;
@@ -214,18 +390,16 @@ func resolveDuplicates(items []flatten.Item) ([]flatten.Item, bool) {
 func postCompletion(target string) bool {
 	for {
 		var action string
-		form := huh.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("What next?").
-				Options(
-					huh.NewOption("Open the folder", "open"),
-					huh.NewOption(revealLabel(), "reveal"),
-					huh.NewOption("Do another directory", "another"),
-					huh.NewOption("Quit", "quit"),
-				).
-				Value(&action),
-		)).WithTheme(wizard.Theme())
-		if err := form.Run(); err != nil {
+		err := wizard.Menu(huh.NewSelect[string]().
+			Title("What next?").
+			Options(
+				huh.NewOption("Open the folder", "open"),
+				huh.NewOption(revealLabel(), "reveal"),
+				huh.NewOption("Do another directory", "another"),
+				huh.NewOption("Quit", "quit"),
+			).
+			Value(&action), false)
+		if err != nil {
 			return false // Ctrl+C at the menu = quit
 		}
 		switch action {
@@ -352,38 +526,109 @@ func (d *progressDrawer) draw(p flatten.Progress) {
 
 	// Erase to end of line: the text shrinks as the ETA and filename do, and
 	// leftovers from a longer previous frame would otherwise linger.
-	fmt.Print("\r" + progressLine(p, rate, stalled) + "\033[K")
+	fmt.Print("\r" + progressLine(p, rate, stalled, termWidth()) + "\033[K")
 	if final {
 		fmt.Println()
 	}
 }
 
-// progressLine builds the progress display. Split from the drawer so it can be
-// tested without capturing stdout.
+// termWidth is the usable width of the terminal: one column short of the edge, so a
+// full line never leaves the cursor in the wrap position. 79 when it cannot tell.
+func termWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w <= 1 {
+		return 79
+	}
+	return w - 1
+}
+
+// progressLine builds the progress display, fitted to width columns. Split from the
+// drawer so it can be tested without capturing stdout.
 //
 // The bar tracks files, not bytes: knowing the total byte count in advance would
 // cost an lstat per file before the copy began — measured at 43x the cost of the
 // walk itself on exFAT — a poor trade on the very drives where progress matters.
-func progressLine(p flatten.Progress, rate float64, stalled time.Duration) string {
-	const width = 30
-	filled := width * p.Done / p.Total
-	bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
-
-	line := fmt.Sprintf("  [%s] %3d%%  %d/%d  %s  %s",
-		bar, p.Done*100/p.Total, p.Done, p.Total,
-		dim.Render(humanBytes(p.Bytes)), bold.Render(humanRate(rate)))
-
-	if stalled >= stallAfter {
-		// Say it loudly, and say what it is stuck on. This is the difference
-		// between "the app hung" and "this one file will not read".
-		line += red.Render(fmt.Sprintf("  ⚠ no data for %s", humanDuration(stalled)))
-	} else if eta, ok := estimateRemaining(p); ok {
-		line += dim.Render("  ~" + humanDuration(eta) + " left")
+//
+// Fitting matters because the drawer redraws in place with a carriage return. A line
+// wider than the terminal wraps, the return lands on the wrapped half, and every
+// frame strands a stale copy of the bar above it — hundreds over a long copy in a
+// default 80-column window. So the line degrades in order: the bar shrinks first
+// (the percentage beside it carries the same information), then the least useful
+// parts go. A stall keeps its warning and the name of the file it is stuck on to
+// the last, because those are the whole message.
+func progressLine(p flatten.Progress, rate float64, stalled time.Duration, width int) string {
+	if p.Total <= 0 {
+		return ""
 	}
+	isStalled := stalled >= stallAfter
+	eta, hasETA := estimateRemaining(p)
+	name := ""
 	if p.Current != "" && p.Done < p.Total {
-		line += "  " + dim.Render(truncateMiddle(p.Current, 28))
+		name = p.Current
 	}
-	return line
+
+	render := func(l lineLayout) string {
+		filled := l.bar * p.Done / p.Total
+		bar := green.Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", l.bar-filled))
+		line := fmt.Sprintf("  [%s] %3d%%  %d/%d", bar, p.Done*100/p.Total, p.Done, p.Total)
+		if l.bytes {
+			line += "  " + dim.Render(humanBytes(p.Bytes))
+		}
+		if l.rate {
+			line += "  " + bold.Render(humanRate(rate))
+		}
+		if isStalled {
+			// Say it loudly, and say what it is stuck on. This is the difference
+			// between "the app hung" and "this one file will not read".
+			line += red.Render(fmt.Sprintf("  ⚠ no data for %s", humanDuration(stalled)))
+		} else if l.eta && hasETA {
+			line += dim.Render("  ~" + humanDuration(eta) + " left")
+		}
+		if l.name > 0 && name != "" {
+			line += "  " + dim.Render(truncateMiddle(name, l.name))
+		}
+		return line
+	}
+
+	for _, l := range progressLayouts(isStalled) {
+		if line := render(l); ansi.StringWidth(line) <= width {
+			return line
+		}
+	}
+	return ansi.Truncate(render(lineLayout{bar: 5}), width, "")
+}
+
+// lineLayout is one way to draw the progress line: how many bar cells, how many
+// runes of the file name (0 hides it), and which optional parts to show.
+type lineLayout struct {
+	bar, name        int
+	eta, bytes, rate bool
+}
+
+// progressLayouts lists the ways to draw the line, from the full display to the
+// barest, in the order they are tried.
+func progressLayouts(stalled bool) []lineLayout {
+	var out []lineLayout
+	for bar := 30; bar >= 12; bar -= 6 {
+		out = append(out, lineLayout{bar: bar, name: 28, eta: true, bytes: true, rate: true})
+	}
+	if stalled {
+		// The rate and byte count are frozen anyway; the file name is the message.
+		out = append(out,
+			lineLayout{bar: 12, name: 28, rate: true},
+			lineLayout{bar: 12, name: 28},
+			lineLayout{bar: 12, name: 16},
+			lineLayout{bar: 5, name: 12},
+		)
+		return out
+	}
+	return append(out,
+		lineLayout{bar: 12, name: 16, eta: true, bytes: true, rate: true},
+		lineLayout{bar: 12, eta: true, bytes: true, rate: true},
+		lineLayout{bar: 12, eta: true, rate: true},
+		lineLayout{bar: 12, rate: true},
+		lineLayout{bar: 5},
+	)
 }
 
 // truncateMiddle shortens a filename while keeping its extension visible, because

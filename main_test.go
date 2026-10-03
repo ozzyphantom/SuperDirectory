@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 )
 
@@ -118,9 +122,12 @@ func TestRateMeterIgnoresBursts(t *testing.T) {
 	}
 }
 
+// wide is a terminal with room for every part of the progress line.
+const wide = 200
+
 func TestProgressLineShowsThroughput(t *testing.T) {
 	p := flatten.Progress{Done: 105, Total: 250, Bytes: 1_900_000_000, Elapsed: 30 * time.Second}
-	line := progressLine(p, 58_300_000, 0)
+	line := progressLine(p, 58_300_000, 0, wide)
 
 	for _, want := range []string{"42%", "105/250", "1.9 GB", "58.3 MB/s", "left"} {
 		if !strings.Contains(line, want) {
@@ -128,7 +135,7 @@ func TestProgressLineShowsThroughput(t *testing.T) {
 		}
 	}
 	// The bar must never overflow when a copy completes.
-	done := progressLine(flatten.Progress{Done: 7, Total: 7, Bytes: 100, Elapsed: time.Second}, 100, 0)
+	done := progressLine(flatten.Progress{Done: 7, Total: 7, Bytes: 100, Elapsed: time.Second}, 100, 0, wide)
 	if !strings.Contains(done, "100%") {
 		t.Errorf("completed line should read 100%%:\n%s", done)
 	}
@@ -162,7 +169,7 @@ func TestRateMeterDetectsAStall(t *testing.T) {
 func TestProgressLineNamesTheStuckFile(t *testing.T) {
 	p := flatten.Progress{Done: 1084, Total: 11041, Bytes: 1_200_000_000, Current: "DSC_4417.NEF", Elapsed: time.Minute}
 
-	running := progressLine(p, 38_000_000, 0)
+	running := progressLine(p, 38_000_000, 0, wide)
 	if !strings.Contains(running, "DSC_4417.NEF") {
 		t.Errorf("running line should name the file in flight:\n%s", running)
 	}
@@ -170,7 +177,7 @@ func TestProgressLineNamesTheStuckFile(t *testing.T) {
 		t.Errorf("running line should show an ETA:\n%s", running)
 	}
 
-	stuck := progressLine(p, 38_000_000, 47*time.Second)
+	stuck := progressLine(p, 38_000_000, 47*time.Second, wide)
 	if !strings.Contains(stuck, "DSC_4417.NEF") {
 		t.Errorf("stalled line must still name the file:\n%s", stuck)
 	}
@@ -198,5 +205,82 @@ func TestTruncateMiddle(t *testing.T) {
 	}
 	if !strings.Contains(got, "…") {
 		t.Errorf("no ellipsis: %q", got)
+	}
+}
+
+// TestProgressLineFitsTheTerminal is the fix for a copy that filled an 80-column
+// window with stale progress bars: a line wider than the terminal wraps, and the
+// carriage return redraws only the wrapped half.
+func TestProgressLineFitsTheTerminal(t *testing.T) {
+	p := flatten.Progress{
+		Done: 1084, Total: 11041, Bytes: 1_200_000_000, Elapsed: time.Minute,
+		Current: "IMG_2019_summer_vacation_with_family_at_the_lake_house_1084.jpg",
+	}
+	for _, width := range []int{20, 40, 59, 79, 99, 139} {
+		for _, stalled := range []time.Duration{0, 47 * time.Second} {
+			line := progressLine(p, 38_000_000, stalled, width)
+			if got := ansi.StringWidth(line); got > width {
+				t.Errorf("width %d, stalled %v: line is %d columns:\n%s", width, stalled, got, line)
+			}
+		}
+	}
+
+	// At the default 80 columns a healthy copy keeps its rate and ETA by shrinking
+	// the bar, rather than dropping the numbers.
+	line := progressLine(p, 38_000_000, 0, 79)
+	for _, want := range []string{"1084/11041", "MB/s", "left"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("80 columns: missing %q:\n%s", want, line)
+		}
+	}
+
+	// A stall keeps its warning and the stuck file's name to the last.
+	stuck := progressLine(p, 38_000_000, 47*time.Second, 59)
+	for _, want := range []string{"no data for 47s", "IMG_"} {
+		if !strings.Contains(stuck, want) {
+			t.Errorf("60 columns, stalled: missing %q:\n%s", want, stuck)
+		}
+	}
+}
+
+// TestScanStatusShowsALongReadMoving: the full read of a large video is where the
+// scan used to freeze on screen. Its byte count must be visible; a small file's
+// would only flicker.
+func TestScanStatusShowsALongReadMoving(t *testing.T) {
+	if got := scanStatus(dedup.Progress{Phase: dedup.Sizing, Done: 2048, Total: 11041}); got != "checking sizes  2048/11041" {
+		t.Errorf("sizing line = %q", got)
+	}
+	big := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 3, Total: 4, Current: "GX010042.MP4", Read: 1_200_000_000, Size: 4_000_000_000})
+	if !strings.Contains(big, "1.2 GB of 4.0 GB") || !strings.Contains(big, "GX010042.MP4") {
+		t.Errorf("large read should show its file and bytes: %q", big)
+	}
+	small := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 1, Total: 4, Current: "a.jpg", Read: 4096, Size: 65536})
+	if strings.Contains(small, " of ") {
+		t.Errorf("a small read should not show a byte count: %q", small)
+	}
+}
+
+func TestCommandLine(t *testing.T) {
+	cases := []struct {
+		args     []string
+		code     int
+		out, err string
+	}{
+		{[]string{"--help"}, 0, "Usage:", ""},
+		{[]string{"-h"}, 0, "Usage:", ""},
+		{[]string{"--version"}, 0, "superdirectory ", ""},
+		{[]string{"--frobnicate"}, 2, "", "unknown argument"},
+	}
+	for _, c := range cases {
+		var out, errOut bytes.Buffer
+		if got := command(c.args, &out, &errOut); got != c.code {
+			t.Errorf("%v: exit %d, want %d", c.args, got, c.code)
+		}
+		if !strings.Contains(out.String(), c.out) {
+			t.Errorf("%v: stdout %q, want it to contain %q", c.args, out.String(), c.out)
+		}
+		if !strings.Contains(errOut.String(), c.err) {
+			t.Errorf("%v: stderr %q, want it to contain %q", c.args, errOut.String(), c.err)
+		}
 	}
 }

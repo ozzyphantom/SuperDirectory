@@ -16,7 +16,7 @@ import (
 //
 // A FIFO is the only portable way to make a read block on demand. It is not a perfect
 // stand-in for a regular file on a failing disk — a FIFO is pollable, so closing it
-// unblocks the reader — but it exercises everything hashFile controls: noticing the
+// unblocks the reader — but it exercises everything the hasher controls: noticing the
 // stall, closing the descriptor, and returning rather than waiting forever.
 func TestHashStallIsAbandoned(t *testing.T) {
 	defer swapPollInterval(t, 5*time.Millisecond)()
@@ -27,7 +27,7 @@ func TestHashStallIsAbandoned(t *testing.T) {
 		t.Skipf("mkfifo unsupported: %v", err)
 	}
 
-	// hashFile's goroutine parks in os.Open until a writer arrives. Release it, or it
+	// The hasher's goroutine parks in os.Open until a writer arrives. Release it, or it
 	// holds the FIFO for the life of the test binary. Opening the write end succeeds
 	// immediately because a reader is already waiting — which is the whole problem.
 	defer func() {
@@ -37,9 +37,9 @@ func TestHashStallIsAbandoned(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := hashFile(fifo, -1, 60*time.Millisecond)
+	_, err := hasher{stall: 60 * time.Millisecond}.hash(fifo, -1)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("hashFile took %v to give up", elapsed)
+		t.Errorf("hash took %v to give up", elapsed)
 	}
 	var se *StallError
 	if !errors.As(err, &se) {
@@ -51,7 +51,7 @@ func TestHashStallIsAbandoned(t *testing.T) {
 // be paired with anything, and must survive into the plan.
 //
 // The file here is unreadable by permission rather than by hardware, which reaches the
-// same code path: hashFile fails, the file is recorded, the scan carries on. A FIFO
+// same code path: the read fails, the file is recorded, the scan carries on. A FIFO
 // would not do — it stats as zero bytes and never becomes a candidate.
 func TestFindTreatsAnUnreadableFileAsUnique(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -98,4 +98,71 @@ func swapPollInterval(t *testing.T, d time.Duration) func() {
 	old := pollInterval
 	pollInterval = d
 	return func() { pollInterval = old }
+}
+
+// TestHashCancelIsAbandoned: Ctrl+C during a read that will never finish must return
+// at once rather than wait for a byte that is not coming.
+func TestHashCancelIsAbandoned(t *testing.T) {
+	defer swapPollInterval(t, 5*time.Millisecond)()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "stuck.bin")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	defer func() {
+		if w, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
+			w.Close()
+		}
+	}()
+
+	cancel := make(chan struct{})
+	time.AfterFunc(30*time.Millisecond, func() { close(cancel) })
+
+	start := time.Now()
+	_, err := hasher{cancel: cancel}.hash(fifo, -1) // stall guard off: cancel alone must do it
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("hash took %v to stop", elapsed)
+	}
+	if !errors.Is(err, errCanceled) {
+		t.Fatalf("err = %v, want errCanceled", err)
+	}
+}
+
+// TestLongReadReportsBytes: a multi-gigabyte video takes minutes to read on a slow
+// drive. Its progress must move through the read, not sit frozen on its name.
+func TestLongReadReportsBytes(t *testing.T) {
+	defer swapPollInterval(t, 2*time.Millisecond)()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "long.mov")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	go func() {
+		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer w.Close()
+		for i := 0; i < 10; i++ {
+			w.Write(make([]byte, 1024))
+			time.Sleep(4 * time.Millisecond)
+		}
+	}()
+
+	var seen []int64
+	h := hasher{stall: time.Second, onRead: func(n int64) { seen = append(seen, n) }}
+	if _, err := h.hash(fifo, -1); err != nil {
+		t.Fatal(err)
+	}
+	moving := false
+	for i := 1; i < len(seen); i++ {
+		if seen[i] > seen[i-1] && seen[i-1] > 0 {
+			moving = true
+		}
+	}
+	if !moving {
+		t.Errorf("byte reports never advanced mid-read: %v", seen)
+	}
 }

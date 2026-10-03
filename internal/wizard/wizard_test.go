@@ -1,6 +1,10 @@
 package wizard
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestOverlaps(t *testing.T) {
 	cases := []struct {
@@ -44,5 +48,62 @@ func TestSafeBase(t *testing.T) {
 		if got := safeBase(in); got != want {
 			t.Errorf("safeBase(%q)=%q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestCheckTargetRefusesAPopulatedFolder: the destination screen promises a new
+// folder. Merging into one that already holds files would silently replace any that
+// share a name with the plan.
+func TestCheckTargetRefusesAPopulatedFolder(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(rel string, file bool) string {
+		p := filepath.Join(dir, rel)
+		if file {
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if err := checkTarget(filepath.Join(dir, "new")); err != nil {
+		t.Errorf("a folder that does not exist yet was refused: %v", err)
+	}
+	if err := checkTarget(mk("empty", false)); err != nil {
+		t.Errorf("an empty folder was refused: %v", err)
+	}
+	mk("bookkeeping/.DS_Store", true)
+	if err := checkTarget(filepath.Join(dir, "bookkeeping")); err != nil {
+		t.Errorf("a folder holding only .DS_Store was refused: %v", err)
+	}
+	mk("full/beach.jpg", true)
+	if err := checkTarget(filepath.Join(dir, "full")); err == nil {
+		t.Error("a folder holding files was accepted")
+	}
+	if err := checkTarget(mk("a-file", true)); err == nil {
+		t.Error("an existing file was accepted as a folder")
+	}
+}
+
+func TestFreeNameSkipsTakenFolders(t *testing.T) {
+	dir := t.TempDir()
+	if got := freeName(dir, "photos-super"); got != "photos-super" {
+		t.Errorf("freeName = %q, want the base name when it is free", got)
+	}
+	for _, n := range []string{"photos-super", "photos-super-2"} {
+		if err := os.MkdirAll(filepath.Join(dir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n, "a.jpg"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := freeName(dir, "photos-super"); got != "photos-super-3" {
+		t.Errorf("freeName = %q, want photos-super-3", got)
 	}
 }

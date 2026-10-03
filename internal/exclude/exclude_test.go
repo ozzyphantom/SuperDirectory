@@ -261,3 +261,11 @@ func TestExpandLeafDoesNothing(t *testing.T) {
 		t.Error("a leaf directory should not expand")
 	}
 }
+
+func TestPluralAgreesInNumber(t *testing.T) {
+	for n, want := range map[int]string{1: "1 file", 2: "2 files", 0: "0 files"} {
+		if got := plural(n, "file"); got != want {
+			t.Errorf("plural(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

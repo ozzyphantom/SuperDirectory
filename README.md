@@ -76,7 +76,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 
 ## Requirements
 
-Go 1.25 or newer — **only to build**. The resulting binary has no runtime dependencies.
+Go 1.26 or newer — **only to build**. The resulting binary has no runtime dependencies. An older `go` downloads a supported toolchain on its own; `go.mod` pins the one releases are built with.
 
 ## Installation
 
@@ -111,6 +111,8 @@ There is one other command, useful for a quick look at what the content extracto
 go run . inspect <dir>   # non-interactive: pure-Go content inspection
 ```
 
+`--help` lists the commands and `--version` prints the version. Without a terminal, the wizard exits with status 1 and says so.
+
 The wizard walks you through seven steps. Two of them are skipped when they don't apply.
 
 1. **Mode** — flatten into one folder, or organize by file type
@@ -126,7 +128,8 @@ The wizard walks you through seven steps. Two of them are skipped when they don'
 | Context | Key | Action |
 |---|---|---|
 | Everywhere | `Ctrl+C` | Exit the program |
-| Everywhere | `Esc` | Go back a step |
+| During a scan or copy | `Ctrl+C` | Stop cleanly: the file in flight is removed, never left truncated. Press again to quit at once |
+| Every wizard step | `Esc` | Go back a step |
 | All menus | `↑` / `↓` | Navigate choices |
 | All menus | `Enter` | Confirm selection |
 | Directory browser | `→` | Open the highlighted directory |
@@ -206,6 +209,17 @@ A copy no longer hangs on one bad file. If a file delivers no data for 60 second
 ```
 
 This cannot interrupt the read itself. Go's `SetReadDeadline` works only on pipes and sockets, never on a regular file, and no syscall unblocks a read parked in a disk retry. The file's copy runs on its own goroutine and is *abandoned* — a deliberate, bounded leak that beats hanging the whole program on one bad sector.
+
+## Stopping a copy
+
+`Ctrl+C` during the duplicate scan or the copy stops cleanly. The file in flight is abandoned the same way, and its partial destination is deleted, so the superdirectory never holds a truncated file under a real file's name. Files already copied stay.
+
+```
+  Stopped.  454 of 1504 file(s) copied into /Volumes/Archive/Photos-super
+  The partial copy of IMG_0455.jpg was removed.
+```
+
+The exit status is 130, the shell convention for an interrupted program.
 
 ## Application Structure
 
