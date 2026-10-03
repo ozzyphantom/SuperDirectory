@@ -294,19 +294,17 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 	}
 
 	var choice string
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
-				res.Files, humanBytes(res.Bytes), len(res.Sets))).
-			Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
-			Options(
-				huh.NewOption("Skip duplicates — copy one of each set", "skip"),
-				huh.NewOption("Copy everything", "all"),
-				huh.NewOption("Cancel", "cancel"),
-			).
-			Value(&choice),
-	)).WithTheme(wizard.Theme())
-	if err := form.Run(); err != nil {
+	err := wizard.Menu(huh.NewSelect[string]().
+		Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
+			res.Files, humanBytes(res.Bytes), len(res.Sets))).
+		Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
+		Options(
+			huh.NewOption("Skip duplicates — copy one of each set", "skip"),
+			huh.NewOption("Copy everything", "all"),
+			huh.NewOption("Cancel", "cancel"),
+		).
+		Value(&choice), false)
+	if err != nil {
 		return nil, abandoned // ctrl+c
 	}
 
@@ -328,18 +326,16 @@ func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.It
 func postCompletion(target string) bool {
 	for {
 		var action string
-		form := huh.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("What next?").
-				Options(
-					huh.NewOption("Open the folder", "open"),
-					huh.NewOption(revealLabel(), "reveal"),
-					huh.NewOption("Do another directory", "another"),
-					huh.NewOption("Quit", "quit"),
-				).
-				Value(&action),
-		)).WithTheme(wizard.Theme())
-		if err := form.Run(); err != nil {
+		err := wizard.Menu(huh.NewSelect[string]().
+			Title("What next?").
+			Options(
+				huh.NewOption("Open the folder", "open"),
+				huh.NewOption(revealLabel(), "reveal"),
+				huh.NewOption("Do another directory", "another"),
+				huh.NewOption("Quit", "quit"),
+			).
+			Value(&action), false)
+		if err != nil {
 			return false // Ctrl+C at the menu = quit
 		}
 		switch action {

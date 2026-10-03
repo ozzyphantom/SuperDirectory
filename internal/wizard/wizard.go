@@ -216,17 +216,15 @@ func askMode(current Mode) (Mode, error) {
 	if current == ModeOrganize {
 		choice = "organize"
 	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("What kind of superdirectory?").
-			Description("Flatten pools every file in one folder.\nOrganize sorts them into "+strings.Join(organize.Categories(), ", ")+", and Other.").
-			Options(
-				huh.NewOption("Flatten — one folder, every file", "flatten"),
-				huh.NewOption("Organize by file type — a folder per type", "organize"),
-			).
-			Value(&choice),
-	)).WithTheme(Theme())
-	if err := form.Run(); err != nil {
+	err := Menu(huh.NewSelect[string]().
+		Title("What kind of superdirectory?").
+		Description("Flatten pools every file in one folder.\nOrganize sorts them into "+strings.Join(organize.Categories(), ", ")+", and Other.").
+		Options(
+			huh.NewOption("Flatten — one folder, every file", "flatten"),
+			huh.NewOption("Organize by file type — a folder per type", "organize"),
+		).
+		Value(&choice), false) // the first screen: nothing to go back to
+	if err != nil {
 		return current, huh.ErrUserAborted // ctrl+c
 	}
 	if choice == "organize" {
@@ -242,18 +240,19 @@ func askLayout(current bool) (bool, error) {
 	if current {
 		choice = "keep"
 	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Inside each type folder, keep the original folders?").
-			Description("No:   Documents/pdf/q3.pdf\nYes:  Documents/pdf/Work/Invoices/q3.pdf").
-			Options(
-				huh.NewOption("No — pool every file of a type together", "pool"),
-				huh.NewOption("Yes — group by the folder it came from", "keep"),
-				huh.NewOption("Go back", "back"),
-			).
-			Value(&choice),
-	)).WithTheme(Theme())
-	if err := form.Run(); err != nil {
+	err := Menu(huh.NewSelect[string]().
+		Title("Inside each type folder, keep the original folders?").
+		Description("No:   Documents/pdf/q3.pdf\nYes:  Documents/pdf/Work/Invoices/q3.pdf").
+		Options(
+			huh.NewOption("No — pool every file of a type together", "pool"),
+			huh.NewOption("Yes — group by the folder it came from", "keep"),
+			huh.NewOption("Go back", "back"),
+		).
+		Value(&choice), true)
+	if errors.Is(err, errBack) {
+		return current, errBack
+	}
+	if err != nil {
 		return current, huh.ErrUserAborted // ctrl+c
 	}
 	switch choice {
@@ -328,19 +327,17 @@ func askExclusions(source string, current map[string]bool, subCount int) (map[st
 
 	for {
 		var choice string
-		form := huh.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Exclude any subdirectories?").
-				Description(fmt.Sprintf("%d at the top level. You can descend to any depth.", subCount)).
-				Options(
-					huh.NewOption("No — copy everything", "no"),
-					huh.NewOption("Yes — choose what to skip", "yes"),
-					huh.NewOption("Go back", "back"),
-				).
-				Value(&choice),
-		)).WithTheme(Theme())
-		if err := form.Run(); err != nil {
-			return nil, err // ctrl+c
+		err := Menu(huh.NewSelect[string]().
+			Title("Exclude any subdirectories?").
+			Description(fmt.Sprintf("%d at the top level. You can descend to any depth.", subCount)).
+			Options(
+				huh.NewOption("No — copy everything", "no"),
+				huh.NewOption("Yes — choose what to skip", "yes"),
+				huh.NewOption("Go back", "back"),
+			).
+			Value(&choice), true)
+		if err != nil {
+			return nil, err // errBack, or ctrl+c
 		}
 
 		switch choice {
@@ -394,18 +391,19 @@ func confirm(mode Mode, source, target string, excluded map[string]bool, keepSou
 	}
 
 	var choice string
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Ready to copy?").
-			Description(summary).
-			Options(
-				huh.NewOption("Copy", "copy"),
-				huh.NewOption("Go back", "back"),
-				huh.NewOption("Cancel", "cancel"),
-			).
-			Value(&choice),
-	)).WithTheme(Theme())
-	if err := form.Run(); err != nil {
+	err := Menu(huh.NewSelect[string]().
+		Title("Ready to copy?").
+		Description(summary).
+		Options(
+			huh.NewOption("Copy", "copy"),
+			huh.NewOption("Go back", "back"),
+			huh.NewOption("Cancel", "cancel"),
+		).
+		Value(&choice), true)
+	if errors.Is(err, errBack) {
+		return decBack, nil
+	}
+	if err != nil {
 		return decCancel, huh.ErrUserAborted // ctrl+c
 	}
 	switch choice {
@@ -539,18 +537,19 @@ func askDuplicates(current bool) (bool, error) {
 	if current {
 		choice = "yes"
 	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Look for duplicate files first?").
-			Description("Finds files with identical contents, whatever they are named,\nand offers to copy one of each instead of all of them.\nOnly files sharing a byte size are read.").
-			Options(
-				huh.NewOption("No — copy everything", "no"),
-				huh.NewOption("Yes — find identical files", "yes"),
-				huh.NewOption("Go back", "back"),
-			).
-			Value(&choice),
-	)).WithTheme(Theme())
-	if err := form.Run(); err != nil {
+	err := Menu(huh.NewSelect[string]().
+		Title("Look for duplicate files first?").
+		Description("Finds files with identical contents, whatever they are named,\nand offers to copy one of each instead of all of them.\nOnly files sharing a byte size are read.").
+		Options(
+			huh.NewOption("No — copy everything", "no"),
+			huh.NewOption("Yes — find identical files", "yes"),
+			huh.NewOption("Go back", "back"),
+		).
+		Value(&choice), true)
+	if errors.Is(err, errBack) {
+		return current, errBack
+	}
+	if err != nil {
 		return current, huh.ErrUserAborted // ctrl+c
 	}
 	switch choice {
