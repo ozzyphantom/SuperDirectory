@@ -16,15 +16,9 @@
 package dedup
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"sort"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
@@ -65,6 +59,15 @@ const (
 	Sizing Phase = iota
 	// Hashing reads the files that share a size with another.
 	Hashing
+
+	// ReadingHeaders reads the start of every picture (FindSimilar).
+	ReadingHeaders
+	// Fingerprinting decodes the pictures that passed the shape gate without an
+	// embedded thumbnail to fingerprint.
+	Fingerprinting
+	// Confirming decodes in full the pictures in a match that was found through an
+	// embedded thumbnail.
+	Confirming
 )
 
 // Progress reports how far the scan has got.
@@ -170,10 +173,10 @@ func Find(items []flatten.Item, opts Options) Result {
 			span = limit
 		}
 		report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Size: span})
-		h := hasher{stall: opts.StallTimeout, cancel: opts.Cancel, onRead: func(n int64) {
+		r := reader{stall: opts.StallTimeout, cancel: opts.Cancel, onRead: func(n int64) {
 			report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Read: n, Size: span})
 		}}
-		sum, err := h.hash(items[idx].Src, limit)
+		sum, err := r.hash(items[idx].Src, limit)
 		done++
 		switch {
 		case errors.Is(err, errCanceled):
@@ -208,7 +211,7 @@ func Find(items []flatten.Item, opts Options) Result {
 				continue
 			}
 			if partialIsWhole {
-				res.add(sameHead, g.size)
+				res.add(items, sameHead, g.size)
 				continue
 			}
 			// Stage 3: the whole file, only for the few that still match.
@@ -224,7 +227,7 @@ func Find(items []flatten.Item, opts Options) Result {
 				}
 			}
 			for _, identical := range byFull {
-				res.add(identical, g.size)
+				res.add(items, identical, g.size)
 			}
 		}
 	}
@@ -247,33 +250,51 @@ func closed(c <-chan struct{}) bool {
 	}
 }
 
-// add records a group of identical files, keeping the earliest in plan order. That
-// matters: the plan gave the first occurrence the unsuffixed name, so keeping it
-// leaves "beach.jpg" behind rather than "beach_1.jpg".
-func (r *Result) add(identical []int, size int64) {
+// add records a group of identical files. pickKeeper decides which one is copied;
+// the rest are skipped.
+func (r *Result) add(items []flatten.Item, identical []int, size int64) {
 	if len(identical) < 2 {
 		return
 	}
 	sort.Ints(identical)
-	r.Sets = append(r.Sets, Set{Size: size, Keep: identical[0], Skip: identical[1:]})
-	r.Files += len(identical) - 1
-	r.Bytes += size * int64(len(identical)-1)
+	keep := pickKeeper(items, identical)
+	skip := make([]int, 0, len(identical)-1)
+	for _, i := range identical {
+		if i != keep {
+			skip = append(skip, i)
+		}
+	}
+	r.Sets = append(r.Sets, Set{Size: size, Keep: keep, Skip: skip})
+	r.Files += len(skip)
+	r.Bytes += size * int64(len(skip))
+}
+
+// Skipped lists the plan indices the result would leave behind.
+func (r Result) Skipped() []int {
+	var out []int
+	for _, s := range r.Sets {
+		out = append(out, s.Skip...)
+	}
+	return out
 }
 
 // Filter returns the plan with every duplicate removed, preserving order.
 func Filter(items []flatten.Item, res Result) []flatten.Item {
-	if res.Files == 0 {
+	return Drop(items, res.Skipped())
+}
+
+// Drop returns the plan without the given plan indices, preserving order.
+func Drop(items []flatten.Item, skip []int) []flatten.Item {
+	if len(skip) == 0 {
 		return items
 	}
-	skip := make(map[int]bool, res.Files)
-	for _, s := range res.Sets {
-		for _, i := range s.Skip {
-			skip[i] = true
-		}
+	gone := make(map[int]bool, len(skip))
+	for _, i := range skip {
+		gone[i] = true
 	}
-	out := make([]flatten.Item, 0, len(items)-res.Files)
+	out := make([]flatten.Item, 0, len(items)-len(gone))
 	for i, it := range items {
-		if !skip[i] {
+		if !gone[i] {
 			out = append(out, it)
 		}
 	}
@@ -287,139 +308,4 @@ func baseName(p string) string {
 		}
 	}
 	return p
-}
-
-// StallError reports a file abandoned during hashing.
-type StallError struct{ After time.Duration }
-
-func (e *StallError) Error() string {
-	return fmt.Sprintf("no data for %s while hashing", e.After)
-}
-
-// errCanceled is what a read returns when Options.Cancel closes.
-var errCanceled = errors.New("scan canceled")
-
-// hasher reads files for Find. A read is abandonable — when it stalls, or when the
-// scan is stopped — and reports its progress while it goes.
-type hasher struct {
-	stall  time.Duration
-	cancel <-chan struct{}
-	onRead func(read int64) // bytes read so far, about every pollInterval
-}
-
-// hash returns the SHA-256 of the file, or of its first limit bytes when limit is
-// not negative.
-//
-// When stall is positive or cancel is set, the read runs on its own goroutine and is
-// abandoned if it stops delivering bytes or the scan is stopped — the same
-// treatment, and the same unavoidable goroutine leak, as flatten.Copy. A read parked
-// in a disk retry cannot be cancelled; it can only be walked away from.
-func (h hasher) hash(path string, limit int64) (string, error) {
-	if closed(h.cancel) {
-		return "", errCanceled // stopped before this file began; do not open it
-	}
-	if h.stall <= 0 && h.cancel == nil {
-		return hashDirect(path, limit)
-	}
-
-	type outcome struct {
-		sum string
-		err error
-	}
-	var (
-		read    atomic.Int64
-		aborted atomic.Bool
-		mu      sync.Mutex
-		open    *os.File
-	)
-	done := make(chan outcome, 1)
-
-	go func() {
-		f, err := os.Open(path)
-		if err != nil {
-			done <- outcome{"", err}
-			return
-		}
-		mu.Lock()
-		if aborted.Load() {
-			mu.Unlock()
-			f.Close()
-			done <- outcome{"", &StallError{}}
-			return
-		}
-		open = f
-		mu.Unlock()
-		defer f.Close()
-
-		sum, err := hashReader(f, limit, func(n int64) { read.Add(n) })
-		done <- outcome{sum, err}
-	}()
-
-	abandon := func() {
-		aborted.Store(true)
-		mu.Lock()
-		f := open
-		mu.Unlock()
-		if f != nil {
-			f.Close()
-		}
-	}
-
-	t := time.NewTicker(pollInterval)
-	defer t.Stop()
-	last, lastMoved := int64(0), time.Now()
-	for {
-		select {
-		case o := <-done:
-			return o.sum, o.err
-		case <-h.cancel:
-			abandon()
-			return "", errCanceled
-		case now := <-t.C:
-			n := read.Load()
-			if n != last {
-				last, lastMoved = n, now
-			}
-			if h.onRead != nil {
-				h.onRead(n)
-			}
-			if idle := now.Sub(lastMoved); h.stall > 0 && idle >= h.stall {
-				abandon()
-				return "", &StallError{After: idle}
-			}
-		}
-	}
-}
-
-func hashDirect(path string, limit int64) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	return hashReader(f, limit, nil)
-}
-
-func hashReader(f io.Reader, limit int64, onRead func(int64)) (string, error) {
-	var r io.Reader = f
-	if limit >= 0 {
-		r = io.LimitReader(f, limit)
-	}
-	h := sha256.New()
-	buf := make([]byte, 256<<10)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			h.Write(buf[:n])
-			if onRead != nil {
-				onRead(int64(n))
-			}
-		}
-		if err == io.EOF {
-			return hex.EncodeToString(h.Sum(nil)), nil
-		}
-		if err != nil {
-			return "", err
-		}
-	}
 }

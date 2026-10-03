@@ -187,8 +187,8 @@ func runOnce() (string, outcome) {
 	stop, release := catchInterrupt()
 	defer release()
 
-	if res.FindDuplicates {
-		kept, how := resolveDuplicates(items, stop)
+	if res.Duplicates != wizard.DuplicatesOff {
+		kept, how := resolveDuplicates(items, res.Duplicates, stop)
 		if how != finished {
 			if createdTarget {
 				os.Remove(res.Target) // still empty: nothing was copied into it
@@ -302,81 +302,158 @@ func isClosed(c <-chan struct{}) bool {
 	}
 }
 
-// resolveDuplicates scans the plan for byte-identical files and, if any are found,
-// asks whether to skip them. It returns the plan to copy and how the step ended:
-// abandoned if the user cancelled at the prompt, interrupted if Ctrl+C stopped the
-// scan.
-func resolveDuplicates(items []flatten.Item, stop <-chan struct{}) ([]flatten.Item, outcome) {
-	fmt.Printf("  %s\n", dim.Render("Looking for duplicate files…"))
-
-	var lastDraw time.Time
-	res := dedup.Find(items, dedup.Options{
-		// The scan reads files. On the drive that motivated this, one of them may
-		// never read at all; the scan must not hang where the copy no longer does.
+// resolveDuplicates scans the plan for byte-identical files and, when asked, for
+// smaller copies of pictures, then asks what to skip. It returns the plan to copy
+// and how the step ended: abandoned if the user cancelled at the prompt,
+// interrupted if Ctrl+C stopped a scan.
+func resolveDuplicates(items []flatten.Item, mode wizard.Duplicates, stop <-chan struct{}) ([]flatten.Item, outcome) {
+	opts := dedup.Options{
+		// The scans read files. On the drive that motivated this, one of them may
+		// never read at all; a scan must not hang where the copy no longer does.
 		StallTimeout: flatten.DefaultStallTimeout,
 		Cancel:       stop,
-		OnProgress: func(p dedup.Progress) {
-			if p.Total == 0 {
-				return
-			}
-			now := time.Now()
-			if now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
-				return
-			}
-			lastDraw = now
-			fmt.Printf("\r%s\033[K", ansi.Truncate("  "+dim.Render(scanStatus(p)), termWidth(), "…"))
-		},
-	})
+	}
+
+	fmt.Printf("  %s\n", dim.Render("Looking for identical files…"))
+	opts.OnProgress = scanProgress()
+	exact := dedup.Find(items, opts)
 	fmt.Print("\r\033[K")
-	if res.Canceled {
+	if exact.Canceled {
 		fmt.Printf("  %s  %s\n", orange.Render(bold.Render("Stopped.")), dim.Render("Nothing was copied."))
 		return nil, interrupted
 	}
+	// Smaller copies are looked for among what remains: a picture saved twice,
+	// byte for byte, is settled by the first scan.
+	survivors := dedup.Filter(items, exact)
 
-	if len(res.Unreadable) > 0 {
-		fmt.Printf("  %s %d file(s) could not be read and are treated as unique.\n",
-			orange.Render("!"), len(res.Unreadable))
+	var sim dedup.SimilarResult
+	if mode == wizard.DuplicatesAndResized {
+		fmt.Printf("  %s\n", dim.Render("Looking for smaller copies of pictures…"))
+		opts.OnProgress = scanProgress()
+		sim = dedup.FindSimilar(survivors, opts)
+		fmt.Print("\r\033[K")
+		if sim.Canceled {
+			fmt.Printf("  %s  %s\n", orange.Render(bold.Render("Stopped.")), dim.Render("Nothing was copied."))
+			return nil, interrupted
+		}
 	}
-	if res.Files == 0 {
-		fmt.Printf("  %s\n\n", dim.Render(fmt.Sprintf(
-			"No duplicates found (%d file(s) read).", res.Hashed)))
+
+	if n := len(exact.Unreadable) + len(sim.Unreadable); n > 0 {
+		fmt.Printf("  %s %d file(s) could not be read and are treated as unique.\n", orange.Render("!"), n)
+	}
+	if exact.Files == 0 && sim.Files == 0 {
+		fmt.Printf("  %s\n\n", dim.Render("No duplicates found."))
 		return items, finished
 	}
 
+	var found []string
+	var desc []string
+	if exact.Files > 0 {
+		found = append(found, fmt.Sprintf("%d identical file(s)", exact.Files))
+		desc = append(desc, "Identical: the same contents, whatever the name. One of each set is\ncopied: the name that is not a copy, nearest the top of the source.")
+	}
+	if sim.Files > 0 {
+		found = append(found, fmt.Sprintf("%d smaller copies of pictures", sim.Files))
+		desc = append(desc, "Smaller copies: the same picture at a lower resolution. The largest\nis copied. For example:\n"+similarExamples(survivors, sim, 3))
+	}
+
+	var options []huh.Option[string]
+	switch {
+	case exact.Files > 0 && sim.Files > 0:
+		options = append(options,
+			huh.NewOption("Skip both — identical files and smaller copies", "both"),
+			huh.NewOption("Skip identical files only", "identical"))
+	case exact.Files > 0:
+		options = append(options, huh.NewOption("Skip duplicates — copy one of each set", "identical"))
+	default:
+		options = append(options, huh.NewOption("Skip smaller copies — copy the largest of each picture", "both"))
+	}
+	options = append(options,
+		huh.NewOption("Copy everything", "all"),
+		huh.NewOption("Cancel", "cancel"))
+
 	var choice string
 	err := wizard.Menu(huh.NewSelect[string]().
-		Title(fmt.Sprintf("Found %d duplicate file(s), %s, across %d set(s)",
-			res.Files, humanBytes(res.Bytes), len(res.Sets))).
-		Description("Duplicates are byte-for-byte identical, whatever they are named.\nSkipping copies the first of each set and leaves the rest.").
-		Options(
-			huh.NewOption("Skip duplicates — copy one of each set", "skip"),
-			huh.NewOption("Copy everything", "all"),
-			huh.NewOption("Cancel", "cancel"),
-		).
+		Title(fmt.Sprintf("Found %s, %s", strings.Join(found, " and "), humanBytes(exact.Bytes+sim.Bytes))).
+		Description(strings.Join(desc, "\n\n")).
+		Options(options...).
 		Value(&choice), false)
 	if err != nil {
 		return nil, abandoned // ctrl+c
 	}
 
+	var out []flatten.Item
+	var files int
+	var bytes int64
 	switch choice {
-	case "skip":
-		out := dedup.Filter(items, res)
-		fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf(
-			"Skipping %d duplicate(s), saving %s.", res.Files, humanBytes(res.Bytes))))
-		return out, finished
+	case "both":
+		out = dedup.Drop(survivors, sim.Skipped())
+		files, bytes = exact.Files+sim.Files, exact.Bytes+sim.Bytes
+	case "identical":
+		out = survivors
+		files, bytes = exact.Files, exact.Bytes
 	case "all":
 		return items, finished
 	default:
 		return nil, abandoned
 	}
+	flatten.Assign(out) // survivors reclaim the plain names the skipped files held
+	fmt.Printf("\n  %s\n", green.Render(fmt.Sprintf("Skipping %d file(s), saving %s.", files, humanBytes(bytes))))
+	return out, finished
 }
 
-// scanStatus describes the duplicate scan's progress in one line.
-func scanStatus(p dedup.Progress) string {
-	if p.Phase == dedup.Sizing {
-		return fmt.Sprintf("checking sizes  %d/%d", p.Done, p.Total)
+// similarExamples shows the first few smaller copies and the pictures they defer
+// to, so a choice to skip them is made on evidence rather than a count.
+func similarExamples(items []flatten.Item, res dedup.SimilarResult, n int) string {
+	var lines []string
+	for _, s := range res.Sets {
+		if len(lines) == n {
+			break
+		}
+		small, keep := s.Skip[0], s.Keep
+		lines = append(lines, fmt.Sprintf("  %s %s  →  %s %s",
+			truncateMiddle(filepath.Base(items[small].Src), 24), dims(res.Dims[small]),
+			truncateMiddle(filepath.Base(items[keep].Src), 24), dims(res.Dims[keep])))
 	}
-	s := fmt.Sprintf("hashing %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	if more := len(res.Sets) - len(lines); more > 0 {
+		lines = append(lines, fmt.Sprintf("  … and %d more", more))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func dims(d dedup.Dims) string { return fmt.Sprintf("%d×%d", d.W, d.H) }
+
+// scanProgress draws a scan's progress on one line, at most every 60 ms.
+func scanProgress() func(dedup.Progress) {
+	var lastDraw time.Time
+	return func(p dedup.Progress) {
+		if p.Total == 0 {
+			return
+		}
+		now := time.Now()
+		if now.Sub(lastDraw) < 60*time.Millisecond && p.Done < p.Total {
+			return
+		}
+		lastDraw = now
+		fmt.Printf("\r%s\033[K", ansi.Truncate("  "+dim.Render(scanStatus(p)), termWidth(), "…"))
+	}
+}
+
+// scanStatus describes a scan's progress in one line.
+func scanStatus(p dedup.Progress) string {
+	var s string
+	switch p.Phase {
+	case dedup.Sizing:
+		return fmt.Sprintf("checking sizes  %d/%d", p.Done, p.Total)
+	case dedup.ReadingHeaders:
+		return fmt.Sprintf("reading picture headers  %d/%d", p.Done, p.Total)
+	case dedup.Fingerprinting:
+		s = fmt.Sprintf("fingerprinting %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	case dedup.Confirming:
+		s = fmt.Sprintf("confirming %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	default:
+		s = fmt.Sprintf("hashing %d/%d  %s", p.Done, p.Total, truncateMiddle(p.Current, 28))
+	}
 	// A large file's byte count shows a long read moving; on a small file it would
 	// only flicker.
 	if p.Size >= 8<<20 {

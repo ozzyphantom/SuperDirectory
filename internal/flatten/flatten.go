@@ -31,6 +31,26 @@ import (
 type Item struct {
 	Src string
 	Dst string
+
+	// Want is the destination the planner asked for, before Assign gave it a
+	// collision suffix. Dst equals Want unless an earlier file claimed it.
+	Want string
+}
+
+// Assign gives every item a collision-free Dst from its Want, in plan order. The
+// planners call it. A caller that drops items from a plan — skipped duplicates —
+// calls it again, so a survivor reclaims the plain name a dropped file was
+// holding: "beach.jpg", not "beach_1.jpg". An item with no Want keeps its Dst as
+// the name it wants.
+func Assign(items []Item) {
+	used := map[string]bool{}
+	for i := range items {
+		want := items[i].Want
+		if want == "" {
+			want = items[i].Dst
+		}
+		items[i].Dst = Unique(used, want)
+	}
 }
 
 // Failure records a file that could not be copied, with the cause.
@@ -83,7 +103,6 @@ func Walk(source string, excluded map[string]bool, fn func(path string, d os.Dir
 // "_1", "_2" suffix — matching the Python implementation.
 func Plan(source string, excluded map[string]bool) ([]Item, error) {
 	var items []Item
-	used := map[string]bool{}
 
 	err := Walk(source, excluded, func(path string, d os.DirEntry) {
 		parent := filepath.Dir(path)
@@ -92,11 +111,12 @@ func Plan(source string, excluded map[string]bool) ([]Item, error) {
 		if parent != source {
 			newName = filepath.Base(parent) + "_" + name
 		}
-		items = append(items, Item{Src: path, Dst: Unique(used, newName)})
+		items = append(items, Item{Src: path, Want: newName})
 	})
 	if err != nil {
 		return nil, err
 	}
+	Assign(items)
 	return items, nil
 }
 

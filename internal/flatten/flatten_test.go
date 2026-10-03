@@ -432,3 +432,37 @@ func TestCancelBeforeStartCopiesNothing(t *testing.T) {
 		t.Errorf("target holds %d entries, want none", len(entries))
 	}
 }
+
+// TestAssignLetsASurvivorReclaimItsName: when a duplicate earlier in the plan is
+// dropped, the file it collided with must get the plain name back, not keep the
+// "_1" it was given while the duplicate held "beach.jpg".
+func TestAssignLetsASurvivorReclaimItsName(t *testing.T) {
+	items := []Item{
+		{Src: "/a/beach.jpg", Want: "beach.jpg"},
+		{Src: "/b/beach.jpg", Want: "beach.jpg"},
+		{Src: "/c/other.jpg", Want: "other.jpg"},
+	}
+	Assign(items)
+	if items[0].Dst != "beach.jpg" || items[1].Dst != "beach_1.jpg" {
+		t.Fatalf("first pass: %q, %q", items[0].Dst, items[1].Dst)
+	}
+
+	survivors := []Item{items[1], items[2]} // the first beach.jpg was a duplicate
+	Assign(survivors)
+	if survivors[0].Dst != "beach.jpg" {
+		t.Errorf("survivor kept %q; it should reclaim beach.jpg", survivors[0].Dst)
+	}
+	if survivors[1].Dst != "other.jpg" {
+		t.Errorf("an unrelated name changed: %q", survivors[1].Dst)
+	}
+}
+
+// TestAssignFallsBackToDst: an item built without a Want keeps its Dst as the name it
+// wants, so a hand-made plan survives Assign unchanged.
+func TestAssignFallsBackToDst(t *testing.T) {
+	items := []Item{{Src: "/x", Dst: "x.txt"}}
+	Assign(items)
+	if items[0].Dst != "x.txt" {
+		t.Errorf("Dst = %q, want x.txt", items[0].Dst)
+	}
+}

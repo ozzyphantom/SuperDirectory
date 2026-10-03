@@ -48,10 +48,22 @@ type Result struct {
 	// original folder nesting inside its extension folder.
 	KeepSourceTree bool
 
-	// FindDuplicates asks the copier's caller to look for byte-identical files in
-	// the source before copying, and offer to skip the copies.
-	FindDuplicates bool
+	// Duplicates asks the copier's caller to look for duplicates in the source
+	// before copying, and offer to skip them.
+	Duplicates Duplicates
 }
+
+// Duplicates is how far the scan before copying looks.
+type Duplicates int
+
+const (
+	// DuplicatesOff copies everything.
+	DuplicatesOff Duplicates = iota
+	// DuplicatesIdentical finds byte-identical files, whatever their names.
+	DuplicatesIdentical
+	// DuplicatesAndResized also finds smaller copies of the same picture.
+	DuplicatesAndResized
+)
 
 // errBack is an internal sentinel: a step is asking to return to the previous
 // one. It never escapes Run.
@@ -73,7 +85,7 @@ func Run() (*Result, error) {
 		hasSubs        bool
 		subCount       int
 		keepSourceTree bool
-		findDuplicates bool
+		duplicates     Duplicates
 	)
 
 	const (
@@ -171,7 +183,7 @@ func Run() (*Result, error) {
 			step = stepDuplicates
 
 		case stepDuplicates:
-			find, err := askDuplicates(findDuplicates)
+			find, err := askDuplicates(duplicates)
 			if errors.Is(err, errBack) {
 				if mode == ModeOrganize {
 					step = stepLayout
@@ -183,11 +195,11 @@ func Run() (*Result, error) {
 			if err != nil {
 				return nil, err
 			}
-			findDuplicates = find
+			duplicates = find
 			step = stepConfirm
 
 		case stepConfirm:
-			dec, err := confirm(mode, source, target, excluded, keepSourceTree, findDuplicates)
+			dec, err := confirm(mode, source, target, excluded, keepSourceTree, duplicates)
 			if err != nil {
 				return nil, err
 			}
@@ -199,7 +211,7 @@ func Run() (*Result, error) {
 					Excluded:       excluded,
 					Mode:           mode,
 					KeepSourceTree: mode == ModeOrganize && keepSourceTree,
-					FindDuplicates: findDuplicates,
+					Duplicates:     duplicates,
 				}, nil
 			case decBack:
 				step = stepDuplicates
@@ -368,7 +380,7 @@ const (
 	decCancel
 )
 
-func confirm(mode Mode, source, target string, excluded map[string]bool, keepSourceTree, findDuplicates bool) (decision, error) {
+func confirm(mode Mode, source, target string, excluded map[string]bool, keepSourceTree bool, duplicates Duplicates) (decision, error) {
 	summary := fmt.Sprintf("From:  %s\nTo:    %s\n", source, target)
 	if mode == ModeOrganize {
 		summary += "Mode:  organize by file type\n"
@@ -386,8 +398,11 @@ func confirm(mode Mode, source, target string, excluded map[string]bool, keepSou
 	default:
 		summary += fmt.Sprintf("Excluding: %d directories", n)
 	}
-	if findDuplicates {
-		summary += "\nDuplicates: scan before copying"
+	switch duplicates {
+	case DuplicatesIdentical:
+		summary += "\nDuplicates: skip identical files"
+	case DuplicatesAndResized:
+		summary += "\nDuplicates: skip identical files and smaller copies of pictures"
 	}
 
 	var choice string
@@ -571,20 +586,25 @@ func within(child, parent string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// askDuplicates offers the content-identity scan. It is opt-in because it costs
-// reads: files sharing a byte size have to be hashed, and on an external drive that
-// is the expensive thing. Files with a unique size are never opened.
-func askDuplicates(current bool) (bool, error) {
-	choice := "no"
-	if current {
-		choice = "yes"
-	}
+// askDuplicates offers the scans for duplicates. They are opt-in because they cost
+// reads. Identical files: only files sharing a byte size are read. Smaller copies
+// of pictures: every picture's header is read, and some are decoded.
+func askDuplicates(current Duplicates) (Duplicates, error) {
+	choice := map[Duplicates]string{
+		DuplicatesOff:        "no",
+		DuplicatesIdentical:  "identical",
+		DuplicatesAndResized: "resized",
+	}[current]
 	err := Menu(huh.NewSelect[string]().
-		Title("Look for duplicate files first?").
-		Description("Finds files with identical contents, whatever they are named,\nand offers to copy one of each instead of all of them.\nOnly files sharing a byte size are read.").
+		Title("Look for duplicates first?").
+		Description("Identical files: the same contents, whatever the name.\n"+
+			"Smaller copies: the same picture at a lower resolution; the largest is kept.\n"+
+			"Pictures: JPEG, PNG, GIF, BMP, TIFF, WebP, and HEIC on a Mac.\n"+
+			"RAW files are only ever matched when identical.").
 		Options(
 			huh.NewOption("No — copy everything", "no"),
-			huh.NewOption("Yes — find identical files", "yes"),
+			huh.NewOption("Identical files", "identical"),
+			huh.NewOption("Identical files, and smaller copies of pictures", "resized"),
 			huh.NewOption("Go back", "back"),
 		).
 		Value(&choice), true)
@@ -597,9 +617,11 @@ func askDuplicates(current bool) (bool, error) {
 	switch choice {
 	case "back":
 		return current, errBack
-	case "yes":
-		return true, nil
+	case "identical":
+		return DuplicatesIdentical, nil
+	case "resized":
+		return DuplicatesAndResized, nil
 	default:
-		return false, nil
+		return DuplicatesOff, nil
 	}
 }
