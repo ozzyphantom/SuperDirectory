@@ -70,7 +70,7 @@ It began as a single-file Python script. It was [rewritten in Go](roadmap.md) to
 - **Directory preview** — inspect directory contents before deciding to include or exclude
 - **External-drive ready** — works on exFAT and FAT32, skips the metadata macOS and Windows leave on a drive, and preserves modification times
 - **Live throughput** — the progress bar reports MB/s, bytes copied, the file in flight, and an estimated time remaining, so a slow drive is visibly a slow drive
-- **Duplicate detection** — optionally find byte-identical files and copy one of each instead of all of them
+- **Duplicate detection** — optionally find byte-identical files and copy one of each instead of all of them, and smaller copies of the same picture, keeping the largest
 - **Survives a bad file** — a file that stops delivering data is abandoned after 60s, recorded, and the copy carries on
 - **Safe by default** — refuses a destination inside the source, so a copy can never eat itself
 
@@ -120,7 +120,7 @@ The wizard walks you through seven steps. Two of them are skipped when they don'
 3. **Destination** — browse to where the superdirectory goes, and name it
 4. **Exclusion** — optionally skip subdirectories (skipped when the source has none)
 5. **Layout** — keep the original folders inside each type folder? (organize mode only)
-6. **Duplicates** — scan for byte-identical files before copying?
+6. **Duplicates** — skip identical files, and optionally smaller copies of pictures?
 7. **Confirmation** — review, go back, or copy
 
 ### Keyboard Controls
@@ -180,7 +180,11 @@ Modification times are preserved, so an archived superdirectory remembers when i
 
 ## Duplicate detection
 
-Optional, and off by default, because it reads files. Answer yes at the duplicates step and SuperDirectory finds files whose contents are **byte-for-byte identical**, whatever they are named, and offers to copy one of each set.
+Optional, and off by default, because it reads files. The duplicates step offers two scans: **identical files**, and identical files plus **smaller copies of pictures**.
+
+### Identical files
+
+SuperDirectory finds files whose contents are **byte-for-byte identical**, whatever they are named, and offers to copy one of each set.
 
 Identity is decided in three stages, so most files are never opened:
 
@@ -191,7 +195,7 @@ Identity is decided in three stages, so most files are never opened:
 On a folder of eleven thousand photographs this typically reads a few hundred.
 
 ```
-  Found 312 duplicate file(s), 2.1 GB, across 147 set(s)
+  Found 312 identical file(s), 2.1 GB
 
   > Skip duplicates — copy one of each set
     Copy everything
@@ -207,6 +211,34 @@ Which copy survives:
 So `Trip/beach.jpg` survives over `Backup/beach copy.jpg`, even though `Backup` sorts first. After the duplicates are dropped, names are assigned again, so a survivor never keeps a `_1` suffix it only needed beside its twin.
 
 A file that cannot be read is never called a duplicate; it is reported and copied.
+
+### Smaller copies of pictures
+
+The same picture saved at a lower resolution: a photo and its web export, a diagram and its thumbnail. The largest copy is kept. Pictures are JPEG, PNG, GIF, BMP, TIFF, and WebP everywhere, and HEIC on a Mac, through the built-in `sips`.
+
+```
+  Found 5 identical file(s) and 40 smaller copies of pictures, 7.3 MB
+
+  Smaller copies: the same picture at a lower resolution. The largest
+  is copied. For example:
+    DSC_0001.png 480×320  →  DSC_0001.JPG 2400×1600
+    DSC_0012-web.jpg 1200×800  →  DSC_0012.JPG 2400×1600
+    DSC_0024-web.jpg 1200×800  →  DSC_0024.JPG 2400×1600
+    … and 37 more
+
+  > Skip both — identical files and smaller copies
+    Skip identical files only
+    Copy everything
+    Cancel
+```
+
+Each picture is shrunk to a 32×32 grid and fingerprinted. Two pictures match when they have the same shape, different pixel counts, and nearly the same fingerprint. Three rules keep the scan from skipping a picture you meant to keep:
+
+- **A copy at the same size is never skipped.** Frames from one burst share a size, and a frame nudged by 1% looks exactly like a resized copy to any fingerprint. Only a smaller copy defers to a larger one.
+- **RAW files are never compared.** A NEF, CR2, or DNG and the JPEG made from it are both kept. RAW files are still matched when byte-identical.
+- **A match found through an embedded thumbnail is confirmed against the full pictures.** An editor that crops a photo can leave the original's thumbnail behind; the full decode catches it.
+
+Most pictures cost one header read. A camera JPEG's header holds its size, its orientation, and a small thumbnail that is fingerprinted on the spot. A picture is decoded in full only if another picture of the same shape has a different size, and only when it has no usable thumbnail. A library straight off one camera, with no resized copies, stops at the headers. Pictures under 64 pixels on a side, and blank or near-uniform ones, are not compared.
 
 ## When a file will not read
 
@@ -239,7 +271,7 @@ SuperDirectory/
 │   ├── flatten/         # Functional core: shared walk, flat planner, the copier
 │   ├── organize/        # Second planner: Category/extension layout
 │   ├── fsmeta/          # Filesystem-bookkeeping predicate (._*, .DS_Store, …)
-│   ├── dedup/           # Content-identical file detection
+│   ├── dedup/           # Identical files and smaller copies of pictures
 │   ├── pick/            # Keyboard directory browser
 │   ├── exclude/         # Recursive exclusion tree (Bubble Tea)
 │   ├── wizard/          # Interactive layer (Charm huh)
@@ -258,7 +290,7 @@ SuperDirectory/
 | `internal/flatten` | Shared tree walk, the flat planner, and the copier | No TUI knowledge. Pure and unit-tested. |
 | `internal/organize` | The second planner: sort into `Category/extension/` | Shares `flatten.Walk`, emits `flatten.Item`, executed by `flatten.Copy`. |
 | `internal/fsmeta` | Which names are filesystem bookkeeping | Shared by the copy, the exclusion tree, and the wizard's counts so all three agree. |
-| `internal/dedup` | Finds byte-identical files in a plan | Size gate, then a 64 KiB partial hash, then a full hash. Most files are never opened. |
+| `internal/dedup` | Finds byte-identical files, and smaller copies of the same picture, in a plan | Identical: a size gate, then a 64 KiB partial hash, then a full hash. Pictures: headers and embedded thumbnails, a shape gate, perceptual fingerprints, full-decode confirmation. |
 | `internal/pick` | Keyboard directory browser | Handles source and destination selection. |
 | `internal/exclude` | Recursive exclusion tree on Bubble Tea | Descend to any depth; excluding a directory skips its whole subtree. |
 | `internal/wizard` | Interactive layer on Charm `huh` | Mode → source → destination → exclusions → layout → confirm. Returns a plain `Result`. |

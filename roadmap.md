@@ -251,6 +251,56 @@ and watch it progress. That trade is recorded in `Options.StallTimeout`.
 Partial destinations are now removed on any failure. A silently truncated photo sitting in the
 output is worse than a missing one that is named in the failures.
 
+## Smaller copies of pictures (2026-10-03) — done
+
+The duplicates step gained a third choice: identical files, and smaller copies of the
+same picture. A photo and its web export, a diagram and its thumbnail. The largest
+copy is kept. Oscar asked for "the exact same image but a different size"; that
+became the rule, and it is the one thing that keeps the feature safe.
+
+**Same size is never a copy.** A burst frame nudged 1% is indistinguishable from a
+resized copy by any fingerprint — measured, below. Burst frames share a size, so a
+rule that only lets a smaller picture defer to a larger one can never eat a burst.
+
+**Fingerprints, calibrated.** Each picture is shrunk to a 32×32 luma grid, then
+hashed (a 64-bit DCT perceptual hash) and normalized. A match needs the same shape
+(log aspect within 1.5%), a hash within 10 bits, and grids within 0.10. On 24
+synthetic scenes at 1500×1000: resized and recompressed copies at 4 bits and 0.05 or
+less; different scenes at 18 bits and 0.56 or more; 80% crops at 10 and 0.23; burst
+frames shifted 3% at 2–14 bits and 0.11 or more, shifted 1% at 0–4 and 0.04–0.09.
+`TestFingerprintSeparatesCopiesFromOtherPictures` pins it.
+
+**Decoding is the cost, so the work is gated.** A 24 MP JPEG decodes in 260 ms; its
+embedded 160-pixel EXIF thumbnail in 0.13 ms. Headers come first: a JPEG's EXIF
+block yields its size, its orientation, and that thumbnail, fingerprinted on the
+spot; other segments are seeked past, not read. Then a shape gate: a picture can
+only have a smaller copy if a picture of its shape has a different pixel count, so a
+library off one camera, with no resized copies, stops there. Full decodes only for
+what passes without a thumbnail, read in plan order on one goroutine — sequential
+reads suit a USB bridge — and decoded on up to four.
+
+**Thumbnails are trusted only to find candidates.** An editor that crops a photo can
+leave the original's thumbnail behind. Every match found through a thumbnail is
+confirmed against the full pictures before anything is skipped.
+`TestFindSimilarDistrustsAStaleThumbnail` builds exactly that crop, and proves the
+confirmation ran.
+
+**Decisions, by Oscar:** RAW files never compete with JPEGs — a RAW and the JPEG
+beside it are both kept, since most viewers and NotebookLM cannot open RAW. HEIC is
+read through macOS's built-in `sips` rather than a bundled multi-megabyte codec, so
+HEIC is compared on a Mac only; its size and rotation come from its `ispe` and
+`irot` properties without a decode. And the survivor of an identical set is now the
+name that does not read as a copy, then the shallowest, then walk order — with the
+plan reassigned after the drop, so the survivor reclaims the plain name.
+
+End to end, through the binary in a scripted terminal: a 411-file library with 40
+planted smaller copies (web exports, PNG previews, HEIC shares), 5 identical
+backups, and decoys (same-size bursts, RAW pairs, 50 unrelated diagrams). The scans
+found exactly 5 and 40 in about a second, and every decoy survived.
+
+The EXIF, JPEG, and HEIC parsers read untrusted bytes; each has a fuzz target, run
+for 26 million inputs without a fault.
+
 ## Duplicate detection (2026-07-08) — done
 
 An opt-in wizard step. [`internal/dedup`](./internal/dedup) finds files whose contents are

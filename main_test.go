@@ -284,3 +284,33 @@ func TestCommandLine(t *testing.T) {
 		}
 	}
 }
+
+func TestScanStatusNamesEachPictureStage(t *testing.T) {
+	cases := map[dedup.Phase]string{
+		dedup.ReadingHeaders: "reading picture headers  40/120",
+		dedup.Fingerprinting: "fingerprinting 40/120  IMG_0042.jpg",
+		dedup.Confirming:     "confirming 40/120  IMG_0042.jpg",
+	}
+	for phase, want := range cases {
+		if got := scanStatus(dedup.Progress{Phase: phase, Done: 40, Total: 120, Current: "IMG_0042.jpg"}); got != want {
+			t.Errorf("phase %d: %q, want %q", phase, got, want)
+		}
+	}
+}
+
+// TestSimilarExamplesShowSizes: the prompt to skip smaller copies has to show what
+// it would skip, at what size, and what it keeps instead.
+func TestSimilarExamplesShowSizes(t *testing.T) {
+	items := []flatten.Item{{Src: "/p/IMG_0042.jpg"}, {Src: "/p/web/IMG_0042-small.jpg"}, {Src: "/p/a.png"}, {Src: "/p/a-thumb.png"}}
+	res := dedup.SimilarResult{
+		Sets: []dedup.ImageSet{{Keep: 0, Skip: []int{1}}, {Keep: 2, Skip: []int{3}}},
+		Dims: map[int]dedup.Dims{0: {W: 4032, H: 3024}, 1: {W: 1600, H: 1200}, 2: {W: 800, H: 600}, 3: {W: 200, H: 150}},
+	}
+	got := similarExamples(items, res, 1)
+	if !strings.Contains(got, "IMG_0042-small.jpg 1600×1200  →  IMG_0042.jpg 4032×3024") {
+		t.Errorf("example line missing or misformatted:\n%s", got)
+	}
+	if !strings.Contains(got, "… and 1 more") {
+		t.Errorf("should say how many sets are not shown:\n%s", got)
+	}
+}
