@@ -203,7 +203,7 @@ Every step has a back option, and `Esc` goes back a step. Steps that do not appl
 | Duplicate review | `n` | Next set that still skips a file |
 | Duplicate review | `d` | Done: copy as chosen |
 | Duplicate review | `Esc` | Back to the duplicates menu |
-| During a copy | `p` | Pause, and press again to resume |
+| During a copy, in the wizard | `p` | Pause, and press again to resume |
 | During a scan or copy | `Ctrl+C` | Stop cleanly. Press again to quit at once |
 
 The directory browser moves on the arrow keys, so every letter stays free for type-to-jump. The exclusion tree and the review screen also take `h` `j` `k` `l`.
