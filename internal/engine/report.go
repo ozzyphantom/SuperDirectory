@@ -56,7 +56,18 @@ func writeReport(r *run, items []flatten.Item, res flatten.Result) error {
 			}
 		}
 	}
-	rows = append(rows, r.gone...)
+	landed := map[string]string{}
+	for _, it := range items {
+		if it.Move {
+			landed[it.Src] = it.Dst
+		}
+	}
+	for _, rw := range r.gone {
+		if rw.status == "merged" {
+			rw.dst = landed[rw.dst]
+		}
+		rows = append(rows, rw)
+	}
 
 	dir := StateDir(r.j.Target)
 	if err := writeCSV(filepath.Join(dir, "report.csv"), rows); err != nil {

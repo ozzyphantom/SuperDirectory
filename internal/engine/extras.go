@@ -3,12 +3,12 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
 	"github.com/ozzyphantom/SuperDirectory/internal/exif"
@@ -17,7 +17,9 @@ import (
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
 	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 	"github.com/ozzyphantom/SuperDirectory/internal/job"
+	"github.com/ozzyphantom/SuperDirectory/internal/merge"
 	"github.com/ozzyphantom/SuperDirectory/internal/textdup"
+	"github.com/ozzyphantom/SuperDirectory/internal/textual"
 )
 
 // The stages below are filled in as their format packages land: type detection,
@@ -115,21 +117,155 @@ func (r *run) staged(path string) bool {
 	return strings.HasPrefix(path, StateDir(r.j.Target)+string(filepath.Separator))
 }
 
-func (r *run) mergeText(items []flatten.Item) ([]flatten.Item, error) { return items, nil }
-
-// textOf extracts a document's text, by its name's extension, or reports that it
-// cannot. Plain text formats are read directly; richer formats join through
-// package textual.
-var textOf = func(name string, f exif.File, size int64, limit int) (string, error) {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".txt", ".text", ".md", ".markdown", ".log", ".csv", ".tsv", ".rst":
-		b, err := io.ReadAll(io.LimitReader(f, int64(limit)*4))
-		return string(b), err
-	}
-	return "", errNoText
+// mergeable are the text documents merging joins: prose and markup, read by
+// package textual. PDFs stay whole, since NotebookLM reads them with their
+// figures; code, configuration and tables stay whole too, since merged they
+// would bury the prose.
+var mergeable = map[string]bool{
+	".txt": true, ".text": true, ".nfo": true,
+	".md": true, ".markdown": true, ".mdown": true,
+	".rst": true, ".adoc": true, ".asciidoc": true, ".org": true, ".tex": true,
+	".srt": true, ".vtt": true,
+	".html": true, ".htm": true, ".xhtml": true, ".shtml": true,
+	".rtf": true, ".docx": true, ".docm": true, ".odt": true, ".epub": true,
 }
 
-var errNoText = errors.New("no text reader for this format")
+// mergeText joins the text documents of each destination folder into a few
+// Markdown files, "<folder> 001.md" and on, each under NotebookLM's limits: a
+// documentation scrape of two thousand pages becomes a handful of sources. Each
+// document sits under a heading naming where it came from. A folder with one
+// document keeps it as it is, and a document with no readable text is copied
+// whole, with the reason noted. The merged files are staged in the run's folder
+// and moved into place.
+func (r *run) mergeText(items []flatten.Item) ([]flatten.Item, error) {
+	groups := map[string][]int{}
+	var dirs []string
+	for i, it := range items {
+		if !mergeable[strings.ToLower(filepath.Ext(it.Src))] {
+			continue
+		}
+		dir := filepath.Dir(it.Want)
+		if groups[dir] == nil {
+			dirs = append(dirs, dir)
+		}
+		groups[dir] = append(groups[dir], i)
+	}
+	var total int
+	for _, d := range dirs {
+		if len(groups[d]) > 1 {
+			total += len(groups[d])
+		}
+	}
+	if total == 0 {
+		return items, nil
+	}
+	r.h.Stage(Merging)
+	staging := filepath.Join(StateDir(r.j.Target), "merged")
+	os.RemoveAll(staging) // a stopped run's leftovers
+	g := guard.Reader{Stall: flatten.DefaultStallTimeout, Cancel: r.stop}
+
+	merged := map[int][]flatten.Item{} // by the index of each group's first document
+	gone := map[int]bool{}
+	done := 0
+	for k, dir := range dirs {
+		members := groups[dir]
+		if len(members) < 2 {
+			continue
+		}
+		base := filepath.Base(dir)
+		if dir == "." {
+			base = filepath.Base(r.j.Target)
+		}
+		w, err := merge.NewWriter(filepath.Join(staging, strconv.Itoa(k)), base, merge.NotebookLM)
+		if err != nil {
+			return nil, err
+		}
+		var newest time.Time
+		var joined []int
+		into := map[int]string{} // the merged file each document starts in
+		for _, i := range members {
+			it := items[i]
+			r.h.Progress(Merging, done, total, filepath.Base(it.Src))
+			done++
+			text, err := guard.Read(g, it.Src, func(f exif.File) (string, error) {
+				return textual.Text(it.Src, f, it.Size, 0)
+			})
+			if errors.Is(err, guard.ErrCanceled) {
+				w.Close()
+				return nil, ErrStopped
+			}
+			if text == "" {
+				reason := "no readable text"
+				if err != nil {
+					reason = err.Error()
+				}
+				r.notes[it.Src] = "not merged: " + reason
+				continue
+			}
+			origin := it.Rel
+			if o, ok := r.origin[it.Src]; ok {
+				origin = o
+			}
+			file, err := w.Add(origin, text)
+			if err != nil {
+				w.Close()
+				return nil, fmt.Errorf("merging %s: %w", it.Src, err)
+			}
+			into[i] = file
+			joined = append(joined, i)
+			if it.ModTime.After(newest) {
+				newest = it.ModTime
+			}
+		}
+		if err := w.Close(); err != nil {
+			return nil, err
+		}
+		if len(joined) == 0 {
+			continue
+		}
+		var out []flatten.Item
+		for _, f := range w.Files() {
+			// The newest document's date, not the time of this run: a resumed run
+			// writes the same files with the same dates, and finds them already there.
+			os.Chtimes(f, newest, newest)
+			info, err := os.Stat(f)
+			if err != nil {
+				return nil, err
+			}
+			want := filepath.Join(dir, filepath.Base(f))
+			out = append(out, flatten.Item{Src: f, Want: want, Dst: want, Rel: want, Size: info.Size(), ModTime: newest})
+		}
+		merged[joined[0]] = out
+		for _, i := range joined {
+			gone[i] = true
+			it := items[i]
+			src := it.Src
+			if o, ok := r.origin[src]; ok {
+				src = o
+			}
+			// dst holds the staged file for now; the report swaps in where it landed.
+			r.gone = append(r.gone, row{status: "merged", src: src, rel: it.Rel, dst: into[i], bytes: it.Size})
+		}
+		r.sum.Merged += len(joined)
+	}
+	r.h.Progress(Merging, total, total, "")
+
+	var out []flatten.Item
+	for i, it := range items {
+		out = append(out, merged[i]...)
+		if !gone[i] {
+			out = append(out, it)
+		}
+	}
+	flatten.Assign(out)
+	return out, nil
+}
+
+// textOf extracts a document's text, or reports that it cannot. A variable so
+// tests can stand in for the readers.
+var textOf = func(name string, f exif.File, size int64, limit int) (string, error) {
+	return textual.Text(name, f, size, limit)
+}
 
 // docMinWords is the least text a document needs to be compared. Short pages that
 // are mostly a site's shared navigation look alike to any measure of text; real
@@ -144,7 +280,7 @@ const docThreshold = 0.8
 
 // documentDuplicates finds documents that are mostly the same text, among those
 // the earlier scans did not already skip. Each group keeps its newest file — a
-// revision supersedes the one before — and skips only the files that match the
+// revision supersedes the one before, see newer — and skips only the files that match the
 // one kept: groups can chain revisions A-B-C where A and C barely match, and C
 // must not be skipped on B's account.
 func (r *run) documentDuplicates(items []flatten.Item, sets []DupSet) ([]DupSet, error) {
@@ -158,7 +294,7 @@ func (r *run) documentDuplicates(items []flatten.Item, sets []DupSet) ([]DupSet,
 	var sigs []textdup.Signature
 	var idx []int
 	for i, it := range items {
-		if skipped[i] {
+		if skipped[i] || !textual.Supported(it.Src) {
 			continue
 		}
 		r.h.Scan(dedup.Progress{Phase: dedup.Hashing, Done: i, Total: len(items), Current: filepath.Base(it.Src)})
@@ -181,8 +317,7 @@ func (r *run) documentDuplicates(items []flatten.Item, sets []DupSet) ([]DupSet,
 	for _, group := range textdup.Groups(matches) {
 		keep := group[0]
 		for _, k := range group[1:] {
-			a, b := items[idx[k]], items[idx[keep]]
-			if a.ModTime.After(b.ModTime) || (a.ModTime.Equal(b.ModTime) && len(a.Src) < len(b.Src)) {
+			if newer(items[idx[k]], items[idx[keep]]) {
 				keep = k
 			}
 		}
@@ -205,6 +340,20 @@ func (r *run) documentDuplicates(items []flatten.Item, sets []DupSet) ([]DupSet,
 		}
 	}
 	return out, nil
+}
+
+// newer reports whether a supersedes b as the document to keep: the newer file,
+// and on a tie the larger — the same page as rendered HTML and as its source
+// carry one date, and the rendering holds what the source only includes — then
+// the shorter path.
+func newer(a, b flatten.Item) bool {
+	if !a.ModTime.Equal(b.ModTime) {
+		return a.ModTime.After(b.ModTime)
+	}
+	if a.Size != b.Size {
+		return a.Size > b.Size
+	}
+	return len(a.Src) < len(b.Src)
 }
 
 // cleanup removes what the run staged inside the target. A stopped run re-stages

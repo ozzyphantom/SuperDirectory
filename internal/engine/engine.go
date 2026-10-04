@@ -192,7 +192,7 @@ func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
 			break
 		}
 		again := r.copy(pick(items, retry), attempt)
-		res = merge(items, res, again, retry)
+		res = mergeResults(items, res, again, retry)
 	}
 	r.sum.Result = res
 	r.sum.Stopped = closed(stop)
@@ -478,9 +478,9 @@ func pick(items []flatten.Item, idx []int) []flatten.Item {
 	return out
 }
 
-// merge folds a retry pass into the full result: retried files take their new
+// mergeResults folds a retry pass into the full result: retried files take their new
 // outcome, and their earlier failures give way to whatever the retry reported.
-func merge(items []flatten.Item, res, again flatten.Result, idx []int) flatten.Result {
+func mergeResults(items []flatten.Item, res, again flatten.Result, idx []int) flatten.Result {
 	out := flatten.Result{
 		Outcomes:    append([]flatten.Outcome(nil), res.Outcomes...),
 		Bytes:       res.Bytes + again.Bytes,

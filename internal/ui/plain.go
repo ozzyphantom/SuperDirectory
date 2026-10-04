@@ -197,10 +197,15 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 		rate = float64(r.Bytes) / secs
 	}
 	switch {
-	case r.Copied == 0 && r.Cloned > 0:
-		// Clones on one volume move no data; a rate would be a fiction.
+	case r.Bytes == 0 && r.ClonedBytes > 0:
+		// Clones on one volume, and files the run staged and moved into place, move
+		// no data; a rate would be a fiction.
+		note := "no data copied"
+		if r.Cloned > 0 {
+			note = "cloned on the same volume, no data copied"
+		}
 		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s\n", green.Render(bold.Render("Finished!")),
-			bold.Render(HumanBytes(r.ClonedBytes)), humanDuration(s.Elapsed), dim.Render("cloned on the same volume, no data copied"))
+			bold.Render(HumanBytes(r.ClonedBytes)), humanDuration(s.Elapsed), dim.Render(note))
 	default:
 		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s average\n", green.Render(bold.Render("Finished!")),
 			bold.Render(HumanBytes(r.Bytes+r.ClonedBytes)), humanDuration(s.Elapsed), bold.Render(humanRate(rate)))
@@ -227,7 +232,7 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 	}
 	fmt.Fprintln(w, "  "+strings.Join(parts, " · "))
 	if s.Batches > 0 {
-		fmt.Fprintf(w, "  %s\n", dim.Render(fmt.Sprintf("In %d batch folders of at most %d files.", s.Batches, s.Job.Batch)))
+		fmt.Fprintf(w, "  %s\n", dim.Render(fmt.Sprintf("In %s of at most %d files.", count(s.Batches, "batch folder"), s.Job.Batch)))
 	}
 	if s.Report != "" {
 		fmt.Fprintln(w, "  "+dim.Render("Report: "+s.Report+"/report.md"))

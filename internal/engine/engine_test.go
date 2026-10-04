@@ -417,3 +417,113 @@ func TestDistantRevisionsAreNotChained(t *testing.T) {
 		t.Errorf("target holds %v; v1 and v3 must both survive", got)
 	}
 }
+
+func TestMergeTextJoinsEachFolderAndLeavesTheRest(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{
+		"Guide/a.html":   "<html><head><title>Start</title></head><body><p>Plug it in.</p></body></html>",
+		"Guide/b.md":     "# Setup\n\nTurn the dial.",
+		"Guide/c.txt":    "Clean the filter monthly.",
+		"Guide/d.pdf":    "%PDF-1.4 not merged",
+		"Guide/e.png":    "not text",
+		"Guide/empty.md": "",
+		"Solo/one.txt":   "The only document here.",
+	})
+	old := time.Date(2020, 5, 1, 12, 0, 0, 0, time.UTC)
+	newest := time.Date(2024, 3, 9, 8, 30, 0, 0, time.UTC)
+	for _, rel := range []string{"Guide/a.html", "Guide/b.md"} {
+		os.Chtimes(filepath.Join(src, rel), old, old)
+	}
+	os.Chtimes(filepath.Join(src, "Guide/c.txt"), newest, newest)
+
+	target := filepath.Join(filepath.Dir(src), "Out")
+	j := job.Job{Sources: []string{src}, Target: target, Layout: job.ByDepth, Depth: 1, MergeText: true}
+	sum, err := Run(j, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Merged != 3 {
+		t.Errorf("merged %d documents, want 3: an empty one has no text to merge", sum.Merged)
+	}
+	got := strings.Join(listTarget(t, target), ",")
+	want := "Guide/Guide 001.md,Guide/d.pdf,Guide/e.png,Guide/empty.md,Solo/one.txt"
+	if got != want {
+		t.Errorf("target holds %s\nwant %s", got, want)
+	}
+	body, err := os.ReadFile(filepath.Join(target, "Guide", "Guide 001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"## Guide/a.html", "# Start", "Plug it in.", "## Guide/b.md", "Turn the dial.", "## Guide/c.txt"} {
+		if !strings.Contains(string(body), s) {
+			t.Errorf("merged file lacks %q:\n%s", s, body)
+		}
+	}
+	if strings.Index(string(body), "Plug it in.") > strings.Index(string(body), "Turn the dial.") {
+		t.Error("documents are not in plan order")
+	}
+	if info, _ := os.Stat(filepath.Join(target, "Guide", "Guide 001.md")); !info.ModTime().Equal(newest) {
+		t.Errorf("merged file dated %v, want the newest document's %v", info.ModTime(), newest)
+	}
+	if _, err := os.Stat(filepath.Join(target, StateDirName, "merged")); !os.IsNotExist(err) {
+		t.Error("the staging folder outlived the run")
+	}
+	csv, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.csv"))
+	if n := strings.Count(string(csv), "merged,"); n != 3 {
+		t.Errorf("report.csv has %d merged rows, want 3:\n%s", n, csv)
+	}
+	if !strings.Contains(string(csv), "Guide/Guide 001.md") {
+		t.Errorf("report.csv does not say where the documents went:\n%s", csv)
+	}
+	if !strings.Contains(string(csv), "not merged: ") {
+		t.Errorf("report.csv does not say why the empty document stayed whole:\n%s", csv)
+	}
+
+	// Run again into the same folder, as a resume does: the merged file is written
+	// the same, dated the same, and found already there.
+	sum, err = Run(j, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Result.Existing != sum.Planned {
+		t.Errorf("second run: %d of %d already there", sum.Result.Existing, sum.Planned)
+	}
+}
+
+func TestMergeTextFlatUsesTheDestinationName(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{
+		"a/one.txt": "First.",
+		"b/two.txt": "Second.",
+	})
+	target := filepath.Join(filepath.Dir(src), "Manuals")
+	sum, err := Run(job.Job{Sources: []string{src}, Target: target, MergeText: true, Batch: 50}, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(listTarget(t, target), ","); got != "Batch 01/Manuals 001.md" || sum.Merged != 2 {
+		t.Errorf("target holds %s, merged %d", got, sum.Merged)
+	}
+	csv, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.csv"))
+	if !strings.Contains(string(csv), "Batch 01/Manuals 001.md") {
+		t.Errorf("report.csv names the merged file before batching moved it:\n%s", csv)
+	}
+}
+
+func TestNewerKeepsTheLaterThenTheLargerDocument(t *testing.T) {
+	day := time.Date(2025, 6, 29, 12, 0, 0, 0, time.UTC)
+	source := flatten.Item{Src: "/d/git-add.adoc", Size: 16198, ModTime: day}
+	html := flatten.Item{Src: "/d/git-add.html", Size: 53993, ModTime: day}
+	if !newer(html, source) || newer(source, html) {
+		t.Error("on one date, the larger rendering should be kept over its source")
+	}
+	later := flatten.Item{Src: "/d/old/longer/path.txt", Size: 10, ModTime: day.Add(time.Hour)}
+	if !newer(later, html) {
+		t.Error("a later revision should be kept however small")
+	}
+	a := flatten.Item{Src: "/d/a.txt", Size: 5, ModTime: day}
+	b := flatten.Item{Src: "/d/sub/a.txt", Size: 5, ModTime: day}
+	if !newer(a, b) || newer(b, a) {
+		t.Error("on one date and size, the shorter path should be kept")
+	}
+}
