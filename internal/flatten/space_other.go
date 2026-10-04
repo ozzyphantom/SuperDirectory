@@ -9,3 +9,6 @@ func FreeSpace(path string) (int64, error) { return 0, errors.New("free space un
 
 // SameVolume is unknown on this system; assume not.
 func SameVolume(a, b string) bool { return false }
+
+// diskFull cannot tell on this system.
+func diskFull(err error) bool { return false }

@@ -266,7 +266,11 @@ func sendNotification(j job.Job, sum engine.Summary) {
 	if n := len(sum.Result.Failures); n > 0 {
 		body += fmt.Sprintf("; %d failed", n)
 	}
-	_ = notify.Send("SuperDirectory finished", body) // a missed notification is not a failure
+	title := "SuperDirectory finished"
+	if sum.Result.Full {
+		title = "SuperDirectory stopped: the destination is full"
+	}
+	_ = notify.Send(title, body) // a missed notification is not a failure
 }
 
 // ── the command line ───────────────────────────────────────────────────────

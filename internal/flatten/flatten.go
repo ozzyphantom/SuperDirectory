@@ -279,6 +279,11 @@ type Result struct {
 	Bytes                    int64 // bytes written, including discarded partial files
 	ClonedBytes              int64 // size of the files cloned, which wrote no data
 
+	// Full says the destination filled up. The copy stopped at the file that did
+	// not fit: every file after it would fail the same way, slowly, on a slow drive.
+	// The rest are NotReached, for a resume once there is room.
+	Full bool
+
 	existingBytes int64
 }
 
@@ -292,6 +297,9 @@ func (e *StallError) Error() string {
 	}
 	return fmt.Sprintf("no data for %s — file abandoned, it may be unreadable", d)
 }
+
+// isFull is diskFull, replaceable in tests: no test can fill a disk on demand.
+var isFull = diskFull
 
 // VerifyError reports a copy whose contents did not match its source.
 type VerifyError struct{}
@@ -379,6 +387,10 @@ func Execute(target string, items []Item, opts Options) Result {
 			res.Failures = append(res.Failures, Failure{Src: it.Src, Err: err})
 			res.Outcomes[i] = Failed
 			report(i+1, name)
+			if isFull(err) {
+				res.Full = true
+				return res
+			}
 			continue
 		}
 		if it.Move && os.Rename(it.Src, dst) == nil {
@@ -424,6 +436,10 @@ func Execute(target string, items []Item, opts Options) Result {
 			return res // the file never completed, so it is not reported done
 		}
 		report(i+1, name)
+		if isFull(err) {
+			res.Full = true
+			return res
+		}
 	}
 	return res
 }

@@ -691,3 +691,34 @@ func TestFreeSpaceAndSameVolume(t *testing.T) {
 		t.Error("two temporary folders should share a volume")
 	}
 }
+
+func TestExecuteStopsWhenTheDestinationIsFull(t *testing.T) {
+	src, target := t.TempDir(), t.TempDir()
+	for _, n := range []string{"a.txt", "b.txt", "c.txt"} {
+		os.WriteFile(filepath.Join(src, n), []byte(n), 0o644)
+	}
+	// A file where b's folder should be makes b fail; isFull treats that as full.
+	os.WriteFile(filepath.Join(target, "blocked"), nil, 0o644)
+	old := isFull
+	isFull = func(err error) bool { return err != nil }
+	t.Cleanup(func() { isFull = old })
+
+	items := []Item{
+		{Src: filepath.Join(src, "a.txt"), Dst: "a.txt"},
+		{Src: filepath.Join(src, "b.txt"), Dst: "blocked/b.txt"},
+		{Src: filepath.Join(src, "c.txt"), Dst: "c.txt"},
+	}
+	res := Execute(target, items, Options{})
+	if !res.Full {
+		t.Fatal("Full not set")
+	}
+	want := []Outcome{Copied, Failed, NotReached}
+	for i, o := range res.Outcomes {
+		if o != want[i] && !(i == 0 && o == Cloned) {
+			t.Errorf("item %d: outcome %v, want %v", i, o, want[i])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(target, "c.txt")); !os.IsNotExist(err) {
+		t.Error("a file after the full disk was copied")
+	}
+}

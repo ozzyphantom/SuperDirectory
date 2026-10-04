@@ -174,19 +174,25 @@ func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
 	if err := os.MkdirAll(j.Target, 0o755); err != nil {
 		return r.sum, fmt.Errorf("creating %s: %w", j.Target, err)
 	}
-	if !j.NoReport {
-		if err := saveState(j.Target, State{Job: j, Started: r.start}); err != nil {
-			return r.sum, fmt.Errorf("writing the run record: %w", err)
+	if err := r.checkSpace(items); err != nil {
+		// Nothing was copied: a destination this run created goes again.
+		r.cleanup()
+		if created {
+			os.RemoveAll(StateDir(j.Target))
+			os.Remove(j.Target)
 		}
+		return r.sum, err
+	}
+	// The run record is what resume reads, so it is written with or without a report.
+	if err := saveState(j.Target, State{Job: j, Started: r.start}); err != nil {
+		return r.sum, fmt.Errorf("writing the run record: %w", err)
+	}
+	if !j.NoReport {
 		r.sum.Report = StateDir(j.Target)
 	}
 
-	if err := r.checkSpace(items); err != nil {
-		return r.sum, err
-	}
-
 	res := r.copy(items, 0)
-	for attempt := 1; attempt <= j.Retries && !closed(stop); attempt++ {
+	for attempt := 1; attempt <= j.Retries && !closed(stop) && !res.Full; attempt++ {
 		retry := retryable(items, res)
 		if len(retry) == 0 || !h.Retry(failuresOf(items, res, retry), attempt, j.Retries) {
 			break
@@ -200,13 +206,17 @@ func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
 
 	h.Stage(Finishing)
 	r.cleanup()
-	if !j.NoReport {
+	switch {
+	case !j.NoReport:
 		if err := writeReport(r, items, res); err != nil {
 			return r.sum, fmt.Errorf("writing the report: %w", err)
 		}
-		if err := saveState(j.Target, State{Job: j, Started: r.start, Finished: time.Now(), Complete: !r.sum.Stopped}); err != nil {
+		if err := saveState(j.Target, State{Job: j, Started: r.start, Finished: time.Now(), Complete: !r.sum.Stopped && !res.Full}); err != nil {
 			return r.sum, err
 		}
+	case !r.sum.Stopped && !res.Full:
+		// No report was asked for, and nothing is left to resume: leave no record.
+		os.RemoveAll(StateDir(j.Target))
 	}
 	if r.sum.Stopped {
 		return r.sum, ErrStopped
@@ -411,7 +421,7 @@ func (r *run) checkSpace(items []flatten.Item) error {
 // copier can clone instead of copying.
 func (r *run) clones() bool {
 	for _, s := range r.j.Sources {
-		if !flatten.SameVolume(s, r.j.Target) {
+		if !sameVolume(s, r.j.Target) {
 			return false
 		}
 	}
@@ -510,8 +520,11 @@ func mergeResults(items []flatten.Item, res, again flatten.Result, idx []int) fl
 	return out
 }
 
-// freeSpace is flatten.FreeSpace, replaceable in tests.
-var freeSpace = flatten.FreeSpace
+// freeSpace and sameVolume are flatten's, replaceable in tests.
+var (
+	freeSpace  = flatten.FreeSpace
+	sameVolume = flatten.SameVolume
+)
 
 // loadTable reads the user's category table, if they wrote one.
 func loadTable() (*organize.Table, error) {

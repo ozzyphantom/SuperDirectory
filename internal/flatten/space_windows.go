@@ -3,6 +3,7 @@
 package flatten
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,4 +43,9 @@ func existingParent(path string) string {
 		}
 		p = parent
 	}
+}
+
+// diskFull reports whether err says the volume is full.
+func diskFull(err error) bool {
+	return errors.Is(err, windows.ERROR_DISK_FULL) || errors.Is(err, windows.ERROR_HANDLE_DISK_FULL)
 }

@@ -3,6 +3,7 @@
 package flatten
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -53,4 +54,9 @@ func existingParent(path string) string {
 		}
 		p = parent
 	}
+}
+
+// diskFull reports whether err says the volume, or the user's quota on it, is full.
+func diskFull(err error) bool {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)
 }

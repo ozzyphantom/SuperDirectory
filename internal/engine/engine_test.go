@@ -79,6 +79,15 @@ func listTarget(t *testing.T, target string) []string {
 	return out
 }
 
+// elsewhere makes every destination look like another volume, where files are
+// copied rather than cloned and the space check applies.
+func elsewhere(t *testing.T) {
+	t.Helper()
+	old := sameVolume
+	sameVolume = func(string, string) bool { return false }
+	t.Cleanup(func() { sameVolume = old })
+}
+
 func usePrivateConfig(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -198,16 +207,13 @@ func TestRunAsksBeforeOverfillingTheDestination(t *testing.T) {
 	freeSpace = func(string) (int64, error) { return 10, nil }
 	defer func() { freeSpace = old }()
 
+	elsewhere(t)
+
 	src := tree(t, map[string]string{"big.bin": strings.Repeat("x", 5000)})
-	// A different "volume" is needed for the check to apply; make clones look
-	// impossible by pointing the target at a path the test claims is elsewhere.
 	target := filepath.Join(filepath.Dir(src), "Out")
 	h := &fakeHooks{space: false}
 	r := &run{j: job.Job{Sources: []string{src}, Target: target}, h: h, notes: map[string]string{}}
 	items := []flatten.Item{{Src: filepath.Join(src, "big.bin"), Dst: "big.bin", Size: 5000}}
-	if r.clones() {
-		t.Skip("source and target share a volume here, where clones make the check moot")
-	}
 	if err := r.checkSpace(items); !errors.Is(err, ErrAbandoned) || !h.asked {
 		t.Errorf("err = %v, asked = %v", err, h.asked)
 	}
@@ -558,5 +564,59 @@ func TestDetectTypesRenamesMisnamedFiles(t *testing.T) {
 		if !strings.Contains(string(csv), s) {
 			t.Errorf("report.csv lacks %q:\n%s", s, csv)
 		}
+	}
+}
+
+func TestNoReportLeavesNoRecordButStaysResumable(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{"a.txt": "a", "b.txt": "b", "c.txt": "c"})
+	target := filepath.Join(filepath.Dir(src), "Out")
+	j := job.Job{Sources: []string{src}, Target: target, NoReport: true}
+
+	stop := make(chan struct{})
+	h := &fakeHooks{onCopy: func(c *CopyRun) flatten.Result {
+		close(stop) // stopped before the first file
+		return c.Run(c.Options)
+	}}
+	if _, err := Run(j, h, stop); !errors.Is(err, ErrStopped) {
+		t.Fatalf("stopped run returned %v", err)
+	}
+	if !Interrupted(target) {
+		t.Fatal("a stopped run without a report cannot be resumed")
+	}
+
+	sum, err := Run(j, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Report != "" {
+		t.Errorf("summary names a report: %q", sum.Report)
+	}
+	if _, err := os.Stat(StateDir(target)); !os.IsNotExist(err) {
+		t.Error("a finished run without a report left its record folder")
+	}
+	if got := strings.Join(listTarget(t, target), ","); got != "a.txt,b.txt,c.txt" {
+		t.Errorf("target holds %s", got)
+	}
+}
+
+func TestDecliningTheSpaceCheckLeavesNoDestination(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{"big.bin": strings.Repeat("x", 4096)})
+	target := filepath.Join(filepath.Dir(src), "Out")
+	old := freeSpace
+	freeSpace = func(string) (int64, error) { return 100, nil }
+	t.Cleanup(func() { freeSpace = old })
+	elsewhere(t)
+	h := &fakeHooks{space: false, onCopy: func(c *CopyRun) flatten.Result {
+		t.Fatal("copied after the space check was declined")
+		return flatten.Result{}
+	}}
+	j := job.Job{Sources: []string{src}, Target: target}
+	if _, err := Run(j, h, nil); !errors.Is(err, ErrAbandoned) {
+		t.Fatalf("declined run returned %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("the destination this run created is still there")
 	}
 }

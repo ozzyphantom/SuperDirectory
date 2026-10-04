@@ -188,6 +188,12 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 		fmt.Fprintln(w, "  "+dim.Render("Run it again into the same folder to resume where it stopped."))
 		return
 	}
+	if r.Full {
+		fmt.Fprintf(w, "\n  %s  %s of %s copied into %s\n", orange.Render(bold.Render("The destination is full.")),
+			thousands(written+r.Existing), count(s.Planned, "file"), orange.Render(s.Job.Target))
+		fmt.Fprintln(w, "  "+dim.Render("Free some space, then run it again into the same folder to resume where it stopped."))
+		return
+	}
 	if s.Planned == 0 {
 		fmt.Fprintln(w, "  "+dim.Render("No files to copy."))
 		return

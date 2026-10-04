@@ -101,9 +101,12 @@ func markdown(r *run, rows []row, res flatten.Result) string {
 	p("# SuperDirectory report\n\n")
 	p("| | |\n|---|---|\n")
 	p("| Started | %s |\n", r.start.Format("2006-01-02 15:04"))
-	if r.sum.Stopped {
+	switch {
+	case r.sum.Stopped:
 		p("| Finished | stopped before the end; run it again into the same folder to resume |\n")
-	} else {
+	case res.Full:
+		p("| Finished | the destination is full; free some space, then run it again into the same folder to resume |\n")
+	default:
 		p("| Finished | %s (%s) |\n", time.Now().Format("2006-01-02 15:04"), r.sum.Elapsed.Round(time.Second))
 	}
 	p("| Sources | %s |\n", strings.Join(j.Sources, "<br>"))
