@@ -75,6 +75,9 @@ func humanRate(bytesPerSec float64) string {
 	if bytesPerSec <= 0 {
 		return "— MB/s"
 	}
+	if bytesPerSec >= 1e9 {
+		return fmt.Sprintf("%.2f GB/s", bytesPerSec/1e9)
+	}
 	return fmt.Sprintf("%.1f MB/s", bytesPerSec/1e6)
 }
 

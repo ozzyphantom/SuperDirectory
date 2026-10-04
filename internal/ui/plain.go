@@ -133,7 +133,8 @@ func (u *Plain) Copy(c *engine.CopyRun) flatten.Result {
 		f := frame{p: p, totalBytes: c.Bytes}
 		f.rate, f.stalled = meter.observe(p.Bytes, at)
 		f.left, f.stage = est.eta(p, f.rate, c.Bytes, at)
-		u.status(progressLine(f, termWidth()), p.Done >= p.Total)
+		// status indents the line itself; the line is fitted to what is left.
+		u.status(strings.TrimPrefix(progressLine(f, termWidth()), "  "), p.Done >= p.Total)
 	}
 	res := c.Run(opts)
 	if u.pending {

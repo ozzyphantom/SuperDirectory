@@ -26,7 +26,7 @@ func TestHumanFormats(t *testing.T) {
 			t.Errorf("HumanBytes(%d) = %q, want %q", n, got, want)
 		}
 	}
-	if !strings.HasPrefix(humanRate(0), "—") || humanRate(58_300_000) != "58.3 MB/s" {
+	if !strings.HasPrefix(humanRate(0), "—") || humanRate(58_300_000) != "58.3 MB/s" || humanRate(1_606_500_000) != "1.61 GB/s" {
 		t.Error("humanRate")
 	}
 	for d, want := range map[time.Duration]string{120 * time.Millisecond: "0.1s", 59 * time.Second: "59s", 130 * time.Second: "2m10s", 2*time.Hour + 30*time.Minute: "2h30m"} {
