@@ -23,6 +23,7 @@ import (
 	"github.com/ozzyphantom/SuperDirectory/internal/sniff"
 	"github.com/ozzyphantom/SuperDirectory/internal/textdup"
 	"github.com/ozzyphantom/SuperDirectory/internal/textual"
+	"github.com/ozzyphantom/SuperDirectory/internal/title"
 )
 
 // unrenamed are detected types a file is never renamed to. Family names — ole,
@@ -85,7 +86,39 @@ func (r *run) detectType(g guard.Reader, f *flatten.File) error {
 	return nil
 }
 
-func (r *run) readTitle(g guard.Reader, f *flatten.File) error { return nil }
+// titleBytes caps a name made from a title, in bytes. It leaves room on the 255
+// most filesystems allow for the flat layout's "<folder>_" prefix and a "_1"
+// suffix after a collision.
+const titleBytes = 150
+
+// readTitle names a document after its own title — "doc_4417.pdf" becomes
+// "Configuring VLANs.pdf" — from its metadata or its first heading. The name
+// keeps its extension, corrected or not, and the report keeps the old name. A
+// document with no title, or only a placeholder one, keeps its name.
+func (r *run) readTitle(g guard.Reader, f *flatten.File) error {
+	name := f.BaseName()
+	if !title.Supported(name) {
+		return nil
+	}
+	t, err := guard.Read(g, f.Path, func(fh exif.File) (string, error) {
+		return title.Of(name, fh, f.Size), nil
+	})
+	if err != nil {
+		return err
+	}
+	named := title.Filename(t, filepath.Ext(name), titleBytes)
+	if named == "" || strings.EqualFold(named, name) {
+		return nil
+	}
+	f.Name = named
+	note := "renamed to its title"
+	if prev := r.notes[f.Path]; prev != "" {
+		note += "; " + prev
+	}
+	r.notes[f.Path] = note
+	r.sum.Renamed++
+	return nil
+}
 
 // expand unpacks the archives among the files into the run's staging folder,
 // inside the destination, and puts their contents in the archive's place: an

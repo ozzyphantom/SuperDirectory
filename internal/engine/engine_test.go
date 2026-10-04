@@ -620,3 +620,54 @@ func TestDecliningTheSpaceCheckLeavesNoDestination(t *testing.T) {
 		t.Error("the destination this run created is still there")
 	}
 }
+
+func TestRenameTitlesNamesDocumentsAfterThemselves(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{
+		"doc_4417.html": "<html><head><title>Configuring VLANs</title></head><body>…</body></html>",
+		"a/index.md":    "# Getting Started\n\nPlug it in.",
+		"b/index.md":    "# Getting Started\n\nThe other one.",
+		"blank.html":    "<html><head><title>Untitled</title></head><body></body></html>",
+		"report.php":    "<!DOCTYPE html><html><head><title>Q3 Numbers</title></head><body></body></html>",
+		"photo.jpg":     "not a document",
+	})
+	target := filepath.Join(filepath.Dir(src), "Out")
+	sum, err := Run(job.Job{Sources: []string{src}, Target: target, Layout: job.ByDepth, Depth: 1, RenameTitles: true, DetectTypes: true}, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(listTarget(t, target), ",")
+	// photo.jpg holds text, and a picture's extension says otherwise: it is renamed.
+	want := "Configuring VLANs.html,Q3 Numbers.html,a/Getting Started.md,b/Getting Started.md,blank.html,photo.txt"
+	if got != want {
+		t.Errorf("target holds %s\nwant %s", got, want)
+	}
+	if sum.Renamed != 4 {
+		t.Errorf("renamed %d, want 4", sum.Renamed)
+	}
+	csv, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.csv"))
+	if !strings.Contains(string(csv), "renamed to its title; type: the content is html, not .php") {
+		t.Errorf("report.csv does not record both changes to report.php:\n%s", csv)
+	}
+	md, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.md"))
+	if !strings.Contains(string(md), "`doc_4417.html` → `Configuring VLANs.html`") {
+		t.Errorf("report.md does not list the rename:\n%s", md)
+	}
+}
+
+func TestRenameTitlesCollideIntoSuffixes(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{
+		"one.html":   "<title>Release Notes</title>",
+		"two.html":   "<title>Release Notes</title>",
+		"three.html": "<title>Home</title>",
+	})
+	target := filepath.Join(filepath.Dir(src), "Out")
+	if _, err := Run(job.Job{Sources: []string{src}, Target: target, RenameTitles: true}, &fakeHooks{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// "Home" names nothing, so three.html keeps its name.
+	if got := strings.Join(listTarget(t, target), ","); got != "Release Notes.html,Release Notes_1.html,three.html" {
+		t.Errorf("target holds %s", got)
+	}
+}

@@ -32,6 +32,7 @@ import (
 
 	"github.com/ozzyphantom/SuperDirectory/internal/engine"
 	"github.com/ozzyphantom/SuperDirectory/internal/extract"
+	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
 	"github.com/ozzyphantom/SuperDirectory/internal/job"
 	"github.com/ozzyphantom/SuperDirectory/internal/notify"
 	"github.com/ozzyphantom/SuperDirectory/internal/organize"
@@ -625,7 +626,7 @@ func categoriesCommand(args []string, out, errOut io.Writer) int {
 }
 
 // inspectCommand shows what SuperDirectory reads from inside each file in a
-// folder: its detected type and its title.
+// folder: the type its content shows, its title, and when it was taken.
 func inspectCommand(args []string, out, errOut io.Writer) int {
 	dir := "."
 	if len(args) > 0 {
@@ -639,16 +640,38 @@ func inspectCommand(args []string, out, errOut io.Writer) int {
 	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
 	ex := extract.MetadataExtractor{}
 	for _, e := range entries {
-		if e.IsDir() {
+		if !e.Type().IsRegular() || fsmeta.IsMetadata(e.Name()) {
 			continue
 		}
 		m, err := ex.Extract(filepath.Join(dir, e.Name()))
 		if err != nil {
+			fmt.Fprintf(out, "%s\n    %v\n", e.Name(), err)
 			continue
 		}
-		fmt.Fprintf(out, "%s\n    %s · %d bytes\n", m.Title, m.MIMEType, m.Size)
+		fmt.Fprintf(out, "%s\n    %s\n", e.Name(), describe(e.Name(), m))
 	}
 	return 0
+}
+
+// describe words what inspect found in one file.
+func describe(name string, m extract.Metadata) string {
+	typ := m.Type
+	switch ext := organize.Extension(name); {
+	case typ == "":
+		typ = "type unknown"
+	case !m.Fits && ext == "":
+		typ += ", no extension"
+	case !m.Fits:
+		typ += ", not ." + ext
+	}
+	parts := []string{typ, ui.HumanBytes(m.Size)}
+	if m.Title != "" {
+		parts = append(parts, "title: "+m.Title)
+	}
+	if !m.Taken.IsZero() {
+		parts = append(parts, "taken "+m.Taken.Format("2006-01-02 15:04"))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // reviewHook returns the duplicate review screen.
