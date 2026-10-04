@@ -1,0 +1,36 @@
+---
+/* The AI-written label (UX standard [02.3]): on every page, one line, with
+   the full statement one link away. scripts/build-md.mjs copies this line
+   into each Markdown edition, so the label travels with the text. */
+interface Props {
+  /* True on /disclosures/, so the link shows it is the current page. */
+  current?: boolean;
+}
+const { current = false } = Astro.props;
+---
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p class="ai-note">Definitions, procedures, and labels on this site are AI-written. <a href="/disclosures/" aria-current={current ? 'page' : undefined}>Disclosures</a></p>
+  </div>
+</footer>
+
+<style is:global>
+  .site-footer {
+    margin-top: var(--space-8);
+    padding-block: var(--space-5);
+    border-top: 1px solid var(--rule);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+  .ai-note a {
+    display: inline-block;
+    padding-block: var(--space-2);
+    margin-left: var(--space-1);
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .ai-note a[aria-current='page'] {
+    text-decoration-thickness: 3px;
+  }
+</style>

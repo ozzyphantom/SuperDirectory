@@ -222,3 +222,36 @@ func TestCancelStopsTheFileInFlight(t *testing.T) {
 		t.Error("a file was started after the stop")
 	}
 }
+
+// TestPauseMidFileIsNotAStall: paused while a file is part-way through, with no
+// byte moving for many times the stall timeout, the file must survive and finish.
+func TestPauseMidFileIsNotAStall(t *testing.T) {
+	defer swapPollInterval(t, 5*time.Millisecond)()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "slow.bin")
+	mkfifo(t, fifo)
+	go func() {
+		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer w.Close()
+		w.Write(make([]byte, 1024))
+		time.Sleep(300 * time.Millisecond) // ten stall timeouts of silence
+		w.Write(make([]byte, 1024))
+	}()
+
+	p := &Pauser{}
+	time.AfterFunc(20*time.Millisecond, func() { p.Toggle() })
+	time.AfterFunc(400*time.Millisecond, func() { p.Toggle() })
+
+	target := t.TempDir()
+	res := Execute(target, []Item{{Src: fifo, Dst: "slow.bin"}}, Options{StallTimeout: 30 * time.Millisecond, Pause: p})
+	if len(res.Failures) != 0 {
+		t.Fatalf("a paused file was abandoned: %v", res.Failures[0].Err)
+	}
+	if info, err := os.Stat(filepath.Join(target, "slow.bin")); err != nil || info.Size() != 2048 {
+		t.Errorf("landed %v, %v; want 2048 bytes", info, err)
+	}
+}

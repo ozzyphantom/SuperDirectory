@@ -15,6 +15,8 @@ func TestIsMetadata(t *testing.T) {
 		"System Volume Information",
 		// Linux
 		".Trash-1000",
+		// SuperDirectory's own report folder
+		".superdirectory",
 	}
 	for _, name := range metadata {
 		if !IsMetadata(name) {

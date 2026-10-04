@@ -3,7 +3,10 @@ package wizard
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/ozzyphantom/SuperDirectory/internal/job"
 )
 
 func TestOverlaps(t *testing.T) {
@@ -105,5 +108,24 @@ func TestFreeNameSkipsTakenFolders(t *testing.T) {
 	}
 	if got := freeName(dir, "photos-super"); got != "photos-super-3" {
 		t.Errorf("freeName = %q, want photos-super-3", got)
+	}
+}
+
+func TestSummaryFitsLongPathsFromTheLeft(t *testing.T) {
+	j := job.Job{
+		Sources: []string{"/Volumes/Archive/clients/2024/very/deep/folder/Photos", "/b"},
+		Target:  "/Volumes/Archive/clients/2024/very/deep/folder/Photos-super",
+	}
+	s := summary(j, 50)
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		if w := len([]rune(line)); w > 50 {
+			t.Errorf("%d columns: %q", w, line)
+		}
+	}
+	if !strings.Contains(s, "…") || !strings.Contains(s, "folder/Photos and 1 more") || !strings.Contains(s, "folder/Photos-super") {
+		t.Errorf("paths not cut from the left:\n%s", s)
+	}
+	if whole := Summary(j); !strings.Contains(whole, j.Target) {
+		t.Errorf("Summary cut a path:\n%s", whole)
 	}
 }

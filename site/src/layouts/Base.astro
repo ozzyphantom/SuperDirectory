@@ -1,0 +1,61 @@
+---
+import '../styles/tokens.css';
+import '../styles/base.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  /* Marks the current page in the header. */
+  current?: 'home' | 'docs' | 'disclosures' | null;
+  /* Whether scripts/build-md.mjs writes a Markdown edition for this page.
+     Its PAGES list is the authority; this mirrors it so a page never
+     advertises an edition that was never written. */
+  markdown?: boolean;
+  /* False for a page that is a response, not a resource: the 404. It gets
+     no canonical (there is no URL to point at) and an explicit noindex. */
+  indexable?: boolean;
+}
+
+const { title, description, current = null, markdown = true, indexable = true } = Astro.props;
+
+/* Baked at build time against `site` (astro.config.mjs). */
+const canonical = new URL(Astro.url.pathname, Astro.site);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {/* Deliberately first and blocking: site.js stamps the reader's OS and
+        the starting install tab on <html> before anything paints, so key
+        names and the selected tab are never briefly wrong. The CSP allows no
+        inline script, so this is a same-origin file. is:inline keeps Astro
+        from bundling it: the tag ships exactly as written. */}
+    <script is:inline src="/scripts/site.js"></script>
+    <title>{title}</title>
+    {indexable ? <link rel="canonical" href={canonical} /> : <meta name="robots" content="noindex, follow" />}
+    {/* The Markdown edition of this page. functions/_middleware.js sends the
+        same link as a header; this copy serves anything that holds parsed
+        HTML. */}
+    {markdown && <link rel="alternate" type="text/markdown" href={new URL('index.md', canonical)} />}
+    {description && <meta name="description" content={description} />}
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    {/* No icon file yet: the wordmark is a placeholder (COPY.md). The empty
+        data URL stops the browser asking for /favicon.ico and getting the
+        404 page. */}
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <SiteHeader current={current} />
+    <main id="main">
+      <slot />
+    </main>
+    <SiteFooter current={current === 'disclosures'} />
+  </body>
+</html>

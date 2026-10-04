@@ -1,0 +1,94 @@
+/* Design tokens. The only place a colour, a type size, a space step or a
+   radius is defined; components and pages use these custom properties.
+
+   Colour is monochrome (UX standard [10.3]). There is one accent, --signal,
+   the program's own cyan, #00b4d8. Its use is specific, and it has no other:
+     1. the base edge of a keycap (<kbd class="key">). It marks a key you
+        press, so a key never reads as inline code;
+     2. the highlighted line in the terminal render. The program draws its
+        selected menu item in this cyan, and the render reproduces it.
+   On white it measures 2.46:1, so in the light theme it is never text: only
+   the keycap edge, a decoration beside a full-contrast label. Its one text
+   use sits on the terminal's black, at 8.52:1.
+
+   Every ratio below is WCAG 2 contrast against the token's own background.
+   Readability first (UX standard [10.1]): body text is AAA in both themes. */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- colour: light theme (the default) ------------------------------ */
+  --bg: #ffffff;
+  --fg: #000000;          /* text.                                21.00:1 */
+  --fg-2: #454545;        /* secondary text.     9.59:1; 8.56:1 on --well */
+  --rule: #d4d4d4;        /* decorative hairlines only.            1.48:1 */
+  --edge: #6e6e6e;        /* control and panel boundaries.         5.10:1 */
+  --well: #f2f2f2;        /* command wells, hover fills. --fg on it 18.76 */
+  --signal: #00b4d8;      /* the accent. See the header.                  */
+
+  /* The terminal render is a black screen in both themes: SuperDirectory is
+     a terminal program, and its interface is shown on its own ground. */
+  --screen: #000000;
+  --screen-fg: #e8e8e8;   /* the program's text.                  17.14:1 */
+  --screen-dim: #a3a3a3;  /* the window's title bar.               8.33:1 */
+  --screen-rule: #333333; /* the line under the title bar, decorative     */
+  --screen-edge: #000000; /* light theme: the screen's own black is the edge */
+
+  /* ---- type: system faces only, no font files ------------------------- */
+  /* Sans for what a person reads; mono for what a person types or the
+     program prints. The face tells the reader which one they are looking at. */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    "Noto Sans", "Liberation Sans", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono",
+    Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+
+  --text-sm: 0.9375rem;                        /* 15px: labels, notes      */
+  --text-body: 1.0625rem;                      /* 17px; 18px from 48em     */
+  --text-h3: 1.25rem;
+  --text-h2: 1.625rem;
+  --text-h1: clamp(2rem, 1.25rem + 3vw, 3rem);
+  --leading: 1.6;
+  --leading-tight: 1.2;
+  --measure: 68ch;                             /* longest line of prose    */
+
+  /* ---- space ---------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4.5rem;
+  --gutter: 1rem;                              /* 16px; 32px from 48em     */
+
+  /* ---- shape: a radius per kind of object, not one for everything ------ */
+  --radius-key: 4px;                           /* a keycap                 */
+  --radius-control: 6px;                       /* buttons, tabs, wells     */
+  --radius-screen: 10px;                       /* the terminal's bezel     */
+
+  /* The smallest tap target: 44px, the WCAG 2.5.5 (AAA) size. Every button,
+     tab and navigation link is at least this tall (UX standard [10.2]). */
+  --target: 2.75rem;
+}
+
+@media (min-width: 48em) {
+  :root {
+    --text-body: 1.125rem;
+    --gutter: 2rem;
+  }
+}
+
+/* ---- colour: dark theme, from the reader's system setting -------------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --fg: #ffffff;        /* 21.00:1 */
+    --fg-2: #c4c4c4;      /* 12.04:1; 10.56:1 on --well */
+    --rule: #2e2e2e;      /* decorative hairlines only. 1.55:1 */
+    --edge: #8a8a8a;      /* 6.08:1 */
+    --well: #141414;      /* --fg on it 18.42:1 */
+    /* A black screen on a black page: draw the bezel. */
+    --screen-edge: #8a8a8a;
+  }
+}

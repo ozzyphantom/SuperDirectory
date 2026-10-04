@@ -1,0 +1,77 @@
+---
+/* The duplicates step, as the program draws it after a scan. Every character
+   is SuperDirectory's own interface text, reproduced unchanged (see
+   /disclosures/). It is real monospace text, so it reads aloud, copies,
+   scales and translates, where a screenshot would not.
+
+   One line per block, no newline characters between them: a long line wraps
+   inside the screen on a narrow phone, and the wrapped part hangs under its
+   own line (padding plus negative indent) instead of passing for a new line.
+   The page never scrolls sideways (UX standard [12.2]).
+
+   The highlighted line is the program's selected menu item, in the program's
+   own cyan (tokens.css, --signal). */
+const lines = [
+  '┃ Found 5 identical file(s) and 40 smaller copies of pictures, 7.3 MB',
+  '┃ Identical: the same contents, whatever the name. One of each set is',
+  '┃ copied: the name that is not a copy, nearest the top of the source.',
+  '┃',
+  '┃ Smaller copies: the same picture at a lower resolution. The largest',
+  '┃ is copied. For example:',
+  '┃   DSC_0001.png 480×320  →  DSC_0001.JPG 2400×1600',
+  '┃   DSC_0012-web.jpg 1200×800  →  DSC_0012.JPG 2400×1600',
+  '┃   DSC_0024-web.jpg 1200×800  →  DSC_0024.JPG 2400×1600',
+  '┃   … and 37 more',
+  '┃ > Skip them all',
+  '┃   Choose which kinds to skip…',
+  '┃   Review them one by one…',
+  '┃   Copy everything',
+  '┃   Cancel',
+  '',
+  '  ↑↓ move   enter select   ctrl+c quit',
+];
+const SELECTED = 10;
+---
+
+<figure class="screen">
+  <figcaption class="screen__bar">Duplicates step</figcaption>
+  <pre class="screen__body"><samp>{lines.map((line, i) => <span class:list={['ln', { 'ln--sel': i === SELECTED }]}>{line}</span>)}</samp></pre>
+</figure>
+
+<style is:global>
+  .screen {
+    max-width: 46rem;
+    color: var(--screen-fg);
+    background: var(--screen);
+    border: 1px solid var(--screen-edge);
+    border-radius: var(--radius-screen);
+  }
+  .screen__bar {
+    padding: var(--space-2) var(--space-4);
+    color: var(--screen-dim);
+    font-size: var(--text-sm);
+    border-bottom: 1px solid var(--screen-rule);
+  }
+  .screen__body {
+    padding: var(--space-4) var(--space-4) var(--space-5);
+    font-size: 0.875rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .screen__body samp {
+    font-size: 1em;
+  }
+  .ln {
+    display: block;
+    padding-left: 6ch;
+    text-indent: -6ch;
+  }
+  .ln:empty {
+    min-height: 1.55em;
+  }
+  .ln--sel {
+    color: var(--signal);
+    font-weight: 700;
+  }
+</style>

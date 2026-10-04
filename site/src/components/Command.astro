@@ -1,0 +1,77 @@
+---
+/* One install command and its copy button. The button stays hidden until
+   public/scripts/site.js runs, so a reader without the script never meets a
+   button that does nothing. The command is still plain, selectable text, and
+   one click selects all of it. */
+interface Props {
+  text: string;
+}
+const { text } = Astro.props;
+---
+
+<div class="cmd">
+  <code class="cmd__text" data-copy-text>{text}</code>
+  <button type="button" class="cmd__copy" data-copy={text}><span data-copy-label>Copy</span><span class="vh"> command</span></button>
+</div>
+
+<style is:global>
+  .cmd {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+  /* The well. Long commands wrap inside it; the page never scrolls sideways
+     (UX standard [12.2]). */
+  .cmd__text {
+    flex: 1 1 18rem;
+    min-width: 0;
+    display: block;
+    padding: var(--space-3) var(--space-4);
+    color: var(--fg);
+    background: var(--well);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-control);
+    -webkit-user-select: all;
+    user-select: all;
+  }
+
+  /* An action button: drawn as an outline, unlike the filled tabs and the
+     plain nav items (UX standard [05.4]). */
+  .cmd__copy {
+    display: none;
+  }
+  .js .cmd__copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 6rem;
+    min-height: var(--target);
+    padding: 0 var(--space-4);
+    color: var(--fg);
+    background: var(--bg);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: 700;
+    border: 2px solid var(--fg);
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+  .js .cmd__copy:hover {
+    background: var(--well);
+  }
+  .js .cmd__copy:active {
+    background: var(--rule);
+    transform: translateY(1px);
+  }
+  /* State after a press: filled while "Copied" shows. */
+  .js .cmd__copy[data-state='copied'] {
+    color: var(--bg);
+    background: var(--fg);
+  }
+</style>

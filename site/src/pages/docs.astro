@@ -1,0 +1,727 @@
+---
+import Base from '../layouts/Base.astro';
+import Key from '../components/Key.astro';
+import ExternalLink from '../components/ExternalLink.astro';
+
+/* Usage reference. Technical definitions and procedures only (UX standard
+   [02.2]); procedures in Simplified Technical English ([02.5]). Every section
+   and every command and flag row has an id, so any of them can be linked
+   ([18.5]); scripts/check-links.mjs fails the build check on an anchor that
+   points nowhere. The command and flag descriptions are the program's own
+   help text, word for word; <code> marks literals and changes no text. */
+
+const UPDATED = '2026-10-03';
+
+const toc = [
+  ['wizard', 'Wizard'],
+  ['keys', 'Keys'],
+  ['commands', 'Commands'],
+  ['flags', 'Copy flags'],
+  ['presets', 'Presets'],
+  ['duplicates', 'Duplicates'],
+  ['notebooklm', 'NotebookLM'],
+  ['resume', 'Resume'],
+  ['report', 'Copy report'],
+];
+
+const wizard = [
+  ['Preset', 'Start fresh, or start from a saved preset. Shows only when a preset exists.'],
+  ['Layout', 'Choose flat, by type, by date taken, or keep top folders (flatten below a depth).'],
+  ['Sources', 'Choose a folder. Then add another folder, or continue.'],
+  ['Destination', 'Choose where the new folder goes, then name it. If the name is an interrupted superdirectory, the wizard offers to resume it.'],
+  ['Exclusions', 'Choose subfolders to skip. Shows only when a source has subfolders.'],
+  ['Layout detail', 'By type: keep the original folders inside each type folder, or not. Keep top folders: choose how many levels to keep, 1 to 5. Skipped for flat and by date taken.'],
+  ['Filters', 'Copy everything, or set the types to include or exclude, a size range, a modified-date range, and name patterns to skip.'],
+  ['Duplicates', 'Choose any of: identical files, smaller copies of pictures, near-duplicate documents. Add “review sets one by one before skipping” to decide set by set.'],
+  ['Documents', 'Choose any of: rename documents to their titles, detect types by content, expand .zip, .tar and .chm files, merge text into large files, split into batches of N files.'],
+  ['Options', 'Save a report (on by default), retry failed files once at the end (on by default), verify copies, notify when done.'],
+  ['Confirm', 'Copy, Save as preset, Go back, or Cancel.'],
+];
+
+/* [id, command, description] */
+const commands = [
+  ['cmd-wizard', 'superdirectory', 'start the wizard'],
+  ['cmd-copy', 'superdirectory copy [flags]', 'copy without the wizard'],
+  ['cmd-resume', 'superdirectory resume TARGET', 'finish an interrupted copy into TARGET'],
+  ['cmd-presets', 'superdirectory presets', 'list saved presets; <code>presets delete NAME</code> removes one'],
+  ['cmd-categories', 'superdirectory categories', 'print the type categories; <code>--write</code> saves them for editing'],
+  ['cmd-inspect', 'superdirectory inspect DIR', 'show each file’s detected type and title'],
+  ['cmd-help', 'superdirectory --help | --version', 'list the commands, or print the version'],
+];
+
+/* [flag, argument, description] — the id is "flag-" plus the flag's name. */
+const flags = [
+  ['--from', 'DIR', 'a source folder (repeat for several)'],
+  ['--to', 'DIR', 'the folder to create'],
+  ['--layout', 'NAME', '<code>flat</code> (default), <code>type</code>, <code>date</code>, or <code>depth</code>'],
+  ['--depth', 'N', 'with <code>--layout depth</code>: keep the top N folder levels'],
+  ['--keep-folders', '', 'with <code>--layout type</code>: keep the original folders inside each type folder'],
+  ['--exclude', 'DIR', 'skip a folder (repeat)'],
+  ['--skip', 'PATTERN', 'skip names that match, e.g. <code>\'*.tmp\'</code> or <code>node_modules</code> (repeat)'],
+  ['--only', 'LIST', 'copy only these categories or extensions, e.g. <code>Documents,png</code>'],
+  ['--not', 'LIST', 'never copy these categories or extensions'],
+  ['--min-size', 'SIZE', 'skip files smaller than SIZE, e.g. <code>10KB</code>'],
+  ['--max-size', 'SIZE', 'skip files larger than SIZE, e.g. <code>200MB</code>'],
+  ['--since', 'DATE', 'skip files modified before DATE (<code>YYYY-MM-DD</code>)'],
+  ['--until', 'DATE', 'skip files modified after DATE'],
+  ['--duplicates', 'LIST', '<code>off</code>, or any of <code>identical,pictures,documents</code>; <code>all</code> for every kind'],
+  ['--review', '', 'review duplicate sets one by one before skipping'],
+  ['--rename-titles', '', 'name documents after their own titles'],
+  ['--detect-types', '', 'sort and name files by their content, not their extension'],
+  ['--expand', '', 'expand <code>.zip</code>, <code>.tar</code> and <code>.chm</code> files found in the sources'],
+  ['--merge-text', '', 'merge text documents into files of at most 400,000 words'],
+  ['--batch', 'N', 'split the output into folders of at most N files'],
+  ['--verify', '', 're-read every copy and compare it with its source'],
+  ['--retries', 'N', 'retry failed files N times (default 1)'],
+  ['--no-report', '', 'do not write the report into <code>TARGET/.superdirectory</code>'],
+  ['--notify', '', 'show a desktop notification when the copy finishes'],
+  ['--preset', 'NAME', 'start from a saved preset; flags override it'],
+  ['--save-preset', 'NAME', 'save these settings as a preset'],
+  ['--yes', '', 'do not ask before copying'],
+];
+
+/* [value, what it is] — definitions hold literal markup only. */
+const values = [
+  ['DIR, TARGET', 'A folder.'],
+  ['N', 'A whole number.'],
+  ['NAME', 'A name: a layout, or a preset.'],
+  ['LIST', 'Names joined by commas, with no spaces.'],
+  ['SIZE', 'A size with a unit, such as <code>10KB</code> or <code>200MB</code>.'],
+  ['DATE', 'A date as <code>YYYY-MM-DD</code>.'],
+  ['PATTERN', 'A name, or a pattern with <code>*</code>, such as <code>*.tmp</code>.'],
+];
+---
+
+<Base
+  title="Docs · SuperDirectory"
+  description="SuperDirectory reference: wizard steps, keys, commands and copy flags, presets, duplicate rules, NotebookLM limits, resume, and the copy report."
+  current="docs"
+>
+  <div class="wrap docs">
+    <header class="docs__head">
+      <h1>Docs</h1>
+      <p class="docs__meta">Reference for SuperDirectory. Updated <time datetime={UPDATED}>{UPDATED}</time>.</p>
+    </header>
+
+    <nav class="toc" aria-label="On this page" data-md-skip>
+      <p class="toc__label">On this page</p>
+      <ul>
+        {toc.map(([id, label]) => <li><a href={`#${id}`}>{label}</a></li>)}
+      </ul>
+    </nav>
+
+    <div class="docs__body">
+      {/* ---- Wizard */}
+      <section aria-labelledby="wizard">
+        <h2 id="wizard">Wizard</h2>
+        <p>Run <code>superdirectory</code> with no arguments to start the wizard. The wizard needs a terminal. Without one, it stops with exit status 1.</p>
+        <p>The wizard shows a step only when it applies. On every step, <Key k="esc" /> goes back one step.</p>
+        <table class="wiz">
+          <caption class="vh">Wizard steps, in order</caption>
+          <thead>
+            <tr><th scope="col">Step</th><th scope="col">Name</th><th scope="col">What you choose</th></tr>
+          </thead>
+          <tbody>
+            {wizard.map(([name, what], i) => (
+              <tr><td class="wiz__n">{i + 1}</td><th scope="row">{name}</th><td>{what}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <p>During the copy, <Key k="p" /> pauses and continues. <Key k="ctrl+c" /> stops cleanly; a second press quits at once.</p>
+      </section>
+
+      {/* ---- Keys */}
+      <section aria-labelledby="keys">
+        <h2 id="keys">Keys</h2>
+        <p>Names follow your keyboard. On a Mac, Ctrl is Control.</p>
+
+        <table class="keytable">
+          <caption>Everywhere</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="ctrl+c" /></td><td>Exit the program.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>Every wizard step</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="esc" /></td><td>Go back one step.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>Menus</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="up" /> <Key k="down" /></td><td>Move.</td></tr>
+            <tr><td><Key k="enter" /></td><td>Select.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>Directory browser</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="right" /></td><td>Open the highlighted folder.</td></tr>
+            <tr><td><Key k="left" /> or <Key k="backspace" /></td><td>Go up to the parent folder.</td></tr>
+            <tr><td>Any letter</td><td>Jump to the next entry that starts with that letter.</td></tr>
+            <tr><td><Key k="enter" /></td><td>Choose the current folder.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>Naming a folder</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td>Type, then <Key k="enter" /></td><td>Name and create the new folder.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>Exclusion tree</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="space" /></td><td>Exclude the highlighted folder, or include it again.</td></tr>
+            <tr><td><Key k="right" /> <Key k="left" /></td><td>Expand or collapse a folder.</td></tr>
+            <tr><td><Key k="p" /></td><td>Preview the highlighted folder.</td></tr>
+            <tr><td><Key k="enter" /></td><td>Done: accept the exclusions.</td></tr>
+            <tr><td><Key k="q" /></td><td>Quit the program.</td></tr>
+          </tbody>
+        </table>
+        <p class="small"><Key k="j" /> <Key k="k" /> <Key k="h" /> <Key k="l" /> also move in the exclusion tree.</p>
+
+        <table class="keytable">
+          <caption>Checklists</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="space" /></td><td>Select or clear the highlighted item.</td></tr>
+          </tbody>
+        </table>
+        <table class="keytable">
+          <caption>Duplicate review</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="left" /> <Key k="right" /></td><td>Go to the previous or next set.</td></tr>
+            <tr><td><Key k="up" /> <Key k="down" /></td><td>Move to a file in the set.</td></tr>
+            <tr><td><Key k="enter" /></td><td>Copy the highlighted file, and skip the others in the set.</td></tr>
+            <tr><td><Key k="a" /></td><td>Copy every file in the set. Press again to copy one.</td></tr>
+            <tr><td><Key k="n" /></td><td>Go to the next set that still skips a file.</td></tr>
+            <tr><td><Key k="d" /></td><td>Done: copy as chosen.</td></tr>
+            <tr><td><Key k="esc" /></td><td>Go back to the duplicates menu. Nothing is skipped yet.</td></tr>
+          </tbody>
+        </table>
+        <p class="small"><Key k="h" /> <Key k="j" /> <Key k="k" /> <Key k="l" /> also move in the review.</p>
+        <table class="keytable">
+          <caption>During a scan or a copy</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="ctrl+c" /></td><td>Stop cleanly. The partial file in flight is deleted, never left truncated. Files already copied stay. The exit status is 130. A second press quits at once.</td></tr>
+          </tbody>
+        </table>
+
+        <table class="keytable">
+          <caption>During a copy</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="p" /></td><td>Pause the copy. Press <Key k="p" /> again to continue. In the wizard only.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* ---- Commands */}
+      <section aria-labelledby="commands">
+        <h2 id="commands">Commands</h2>
+        <dl class="spec">
+          {commands.map(([id, cmd, desc]) => (
+            <div id={id}>
+              <dt><code>{cmd}</code></dt>
+              <dd set:html={desc} />
+            </div>
+          ))}
+        </dl>
+
+        <h3 id="values">Values</h3>
+        <p>A word in capitals is a value that you give.</p>
+        <dl class="spec spec--narrow">
+          {values.map(([v, what]) => (
+            <div>
+              <dt><code>{v}</code></dt>
+              <dd set:html={what} />
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      {/* ---- Copy flags */}
+      <section aria-labelledby="flags">
+        <h2 id="flags">Copy flags</h2>
+        <p>Flags for <code>superdirectory copy</code>.</p>
+        <dl class="spec">
+          {flags.map(([flag, arg, desc]) => (
+            <div id={`flag-${flag.slice(2)}`}>
+              <dt><code>{arg ? `${flag} ${arg}` : flag}</code></dt>
+              <dd set:html={desc} />
+            </div>
+          ))}
+        </dl>
+
+        <h3 id="examples">Examples</h3>
+        <dl class="examples">
+          <div>
+            <dt>Flatten one folder.</dt>
+            <dd><pre><code>superdirectory copy --from ~/scrape --to ~/scrape-flat</code></pre></dd>
+          </div>
+          <div>
+            <dt>Sort two folders by type, and skip every kind of duplicate.</dt>
+            <dd><pre><code>superdirectory copy --from ~/Desktop --from ~/Downloads --to ~/sorted --layout type --duplicates all</code></pre></dd>
+          </div>
+          <div>
+            <dt>Copy only documents modified in 2024 or later, without a question first.</dt>
+            <dd><pre><code>superdirectory copy --from ~/archive --to ~/archive-docs --only Documents --since 2024-01-01 --yes</code></pre></dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* ---- Presets */}
+      <section aria-labelledby="presets">
+        <h2 id="presets">Presets</h2>
+        <p>A preset is a set of copy settings saved under a name. Each preset is one JSON file in the <code>presets</code> folder of the <a href="#config">config folder</a>.</p>
+
+        <h3 id="presets-save">Save a preset</h3>
+        <ul class="ways">
+          <li>In the wizard: at the Confirm step, select Save as preset.</li>
+          <li>On the command line: add <code>--save-preset NAME</code> to a <code>superdirectory copy</code> command.</li>
+        </ul>
+
+        <h3 id="presets-use">Use a preset</h3>
+        <ul class="ways">
+          <li>In the wizard: at the Preset step, choose the preset.</li>
+          <li>On the command line: run <code>superdirectory copy --preset NAME</code>. A flag that you add overrides the preset.</li>
+        </ul>
+
+        <h3 id="presets-list">List the presets</h3>
+        <p>Run <code>superdirectory presets</code>.</p>
+
+        <h3 id="config">Config folder</h3>
+        <table class="config">
+          <caption class="vh">Config folder by system</caption>
+          <thead>
+            <tr><th scope="col">System</th><th scope="col">Folder</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">macOS <span class="this-os" data-os-tag="mac" data-md-skip>This computer</span></th><td><code>~/Library/Application Support/SuperDirectory/</code></td></tr>
+            <tr><th scope="row">Linux <span class="this-os" data-os-tag="linux" data-md-skip>This computer</span></th><td><code>$XDG_CONFIG_HOME/SuperDirectory/</code> (default <code>~/.config/SuperDirectory/</code>)</td></tr>
+            <tr><th scope="row">Windows <span class="this-os" data-os-tag="windows" data-md-skip>This computer</span></th><td><code>%AppData%\SuperDirectory\</code></td></tr>
+          </tbody>
+        </table>
+        <dl class="spec spec--narrow">
+          <div>
+            <dt><code>presets/</code></dt>
+            <dd>One JSON file for each preset.</dd>
+          </div>
+          <div id="categories-json">
+            <dt><code>categories.json</code></dt>
+            <dd>The type categories, for editing. <code>superdirectory categories --write</code> creates it.</dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* ---- Duplicates */}
+      <section aria-labelledby="duplicates">
+        <h2 id="duplicates">Duplicates</h2>
+        <p>Off by default. Choose the kinds at the wizard’s Duplicates step, or with <a href="#flag-duplicates"><code>--duplicates</code></a>. Add <a href="#flag-review"><code>--review</code></a> to decide set by set before anything is skipped.</p>
+
+        <h3 id="identical">Identical files</h3>
+        <dl class="spec spec--narrow">
+          <div>
+            <dt>Match</dt>
+            <dd>The same bytes. Names do not matter.</dd>
+          </div>
+          <div>
+            <dt>Kept</dt>
+            <dd>
+              One file from each set, chosen in this order:
+              <ol class="keep">
+                <li>The name that does not read as a copy. <code>beach.jpg</code> is kept over <code>beach copy.jpg</code>, <code>beach - Copy.jpg</code>, <code>beach (1).jpg</code>, <code>Copy of beach.jpg</code>, and <code>beach_1.jpg</code>.</li>
+                <li>Then the shallowest path.</li>
+                <li>Then folder order.</li>
+              </ol>
+            </dd>
+          </div>
+          <div>
+            <dt>Unreadable</dt>
+            <dd>A file that cannot be read is never a duplicate. It is reported and copied.</dd>
+          </div>
+        </dl>
+
+        <h3 id="pictures">Smaller copies of pictures</h3>
+        <dl class="spec spec--narrow">
+          <div>
+            <dt>Match</dt>
+            <dd>The same shape, a different pixel count, and nearly the same picture.</dd>
+          </div>
+          <div>
+            <dt>Kept</dt>
+            <dd>The largest.</dd>
+          </div>
+          <div>
+            <dt>Never skipped</dt>
+            <dd>A copy at the same size.</dd>
+          </div>
+          <div>
+            <dt>Never compared</dt>
+            <dd>RAW files, such as NEF, CR2, and DNG. They still match when their bytes are identical. Also pictures under 64 pixels on a side, and blank or near-uniform pictures.</dd>
+          </div>
+          <div>
+            <dt>Thumbnails</dt>
+            <dd>A match found through an embedded thumbnail is confirmed by a full decode.</dd>
+          </div>
+          <div>
+            <dt>Formats</dt>
+            <dd>JPEG, PNG, GIF, BMP, TIFF, and WebP. HEIC on macOS only.</dd>
+          </div>
+        </dl>
+
+        <h3 id="documents">Near-duplicate documents</h3>
+        <dl class="spec spec--narrow">
+          <div>
+            <dt>Match</dt>
+            <dd>Mostly the same text.</dd>
+          </div>
+          <div>
+            <dt>Kept</dt>
+            <dd>The newest. On the same date, the larger file.</dd>
+          </div>
+          <div>
+            <dt>Never compared</dt>
+            <dd>Documents under 200 words.</dd>
+          </div>
+          <div>
+            <dt>Formats</dt>
+            <dd>Plain text, Markdown, HTML, RTF, Word, ODT, EPUB, and PDF.</dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* ---- NotebookLM */}
+      <section aria-labelledby="notebooklm">
+        <h2 id="notebooklm">NotebookLM</h2>
+        <table class="limits">
+          <caption>NotebookLM limits on the free plan</caption>
+          <thead>
+            <tr><th scope="col">Limit</th><th scope="col">Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Sources in one notebook</th><td>50</td></tr>
+            <tr><th scope="row">One source</th><td>500,000 words or 200 MB</td></tr>
+          </tbody>
+        </table>
+        <table class="limits">
+          <caption>SuperDirectory output for those limits</caption>
+          <thead>
+            <tr><th scope="col">Flag</th><th scope="col">Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row"><code>--batch 50</code></th><td>Folders of at most 50 files: one folder for each notebook.</td></tr>
+            <tr><th scope="row"><code>--merge-text</code></th><td>The text documents of each folder, merged into Markdown files of at most 400,000 words or 150 MB: each file fits in one source. PDFs are not merged.</td></tr>
+          </tbody>
+        </table>
+
+        <h3 id="notebooklm-steps">Prepare a folder for NotebookLM</h3>
+        <ol class="proc">
+          <li>Run this command. Replace DIR with the source folder and TARGET with a new folder name.<pre><code>superdirectory copy --from DIR --to TARGET --duplicates documents --rename-titles --merge-text --batch 50</code></pre></li>
+          <li>Open <ExternalLink href="https://notebooklm.google.com/">NotebookLM</ExternalLink>.</li>
+          <li>Make one notebook for each batch folder in TARGET.</li>
+          <li>Add the files of each batch folder to its notebook as sources.</li>
+        </ol>
+        <p>In the wizard, at the Documents step, select “Merge text documents into large files” and “Split the result into batch folders”. Then choose “50 — NotebookLM’s free plan”.</p>
+      </section>
+
+      {/* ---- Resume */}
+      <section aria-labelledby="resume">
+        <h2 id="resume">Resume</h2>
+        <p>A copy that stops before the end can be finished later. Resume reads the run’s settings from <code>job.json</code> in <code>TARGET/.superdirectory/</code>.</p>
+
+        <h3 id="resume-cli">From the command line</h3>
+        <ol class="proc">
+          <li>Run <code>superdirectory resume TARGET</code>. TARGET is the folder that the interrupted copy was writing.</li>
+        </ol>
+
+        <h3 id="resume-wizard">From the wizard</h3>
+        <ol class="proc">
+          <li>Run <code>superdirectory</code>.</li>
+          <li>At the Destination step, go to the folder that holds the interrupted superdirectory.</li>
+          <li>Type the name of the interrupted superdirectory.</li>
+          <li>Accept the offer to resume it.</li>
+        </ol>
+      </section>
+
+      {/* ---- Copy report */}
+      <section aria-labelledby="report">
+        <h2 id="report">Copy report</h2>
+        <p>Each copy writes a report into the hidden folder <code>.superdirectory/</code> inside the target. To turn it off, use <a href="#flag-no-report"><code>--no-report</code></a>, or clear “Save a report” at the wizard’s Options step. Without a report, a copy that finishes removes the folder.</p>
+        <dl class="spec spec--narrow">
+          <div id="report-job">
+            <dt><code>job.json</code></dt>
+            <dd>The run’s settings, and whether it finished. Resume reads this file. It is written with or without a report, so a stopped copy can resume.</dd>
+          </div>
+          <div id="report-csv">
+            <dt><code>report.csv</code></dt>
+            <dd>One row for each file. Columns: status, source, destination, bytes, note. Status is one of: copied, cloned, already there, expanded, skipped, merged, failed, not reached.</dd>
+          </div>
+          <div id="report-md">
+            <dt><code>report.md</code></dt>
+            <dd>A readable summary.</dd>
+          </div>
+        </dl>
+        <p>SuperDirectory never copies a <code>.superdirectory</code> folder that it finds in a source.</p>
+      </section>
+    </div>
+  </div>
+</Base>
+
+<style is:global>
+  .docs {
+    display: grid;
+    gap: var(--space-6);
+    padding-top: var(--space-7);
+  }
+  .docs__meta {
+    margin-top: var(--space-2);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+
+  /* ---- table of contents ----------------------------------------------- */
+  .toc__label {
+    margin-bottom: var(--space-2);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .toc ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .toc a {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--target);
+    padding-inline: var(--space-3);
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-control);
+  }
+  .toc a:hover {
+    background: var(--well);
+  }
+  .toc a:active {
+    background: var(--rule);
+    transform: translateY(1px);
+  }
+  /* State: the section the reader jumped to is marked in the list. */
+  :root:has(#wizard:target) .toc a[href='#wizard'],
+  :root:has(#keys:target) .toc a[href='#keys'],
+  :root:has(#commands:target) .toc a[href='#commands'],
+  :root:has(#flags:target) .toc a[href='#flags'],
+  :root:has(#presets:target) .toc a[href='#presets'],
+  :root:has(#duplicates:target) .toc a[href='#duplicates'],
+  :root:has(#notebooklm:target) .toc a[href='#notebooklm'],
+  :root:has(#resume:target) .toc a[href='#resume'],
+  :root:has(#report:target) .toc a[href='#report'] {
+    color: var(--bg);
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+
+  /* From 60em: the list becomes a sidebar that stays in view. */
+  @media (min-width: 60em) {
+    .docs {
+      grid-template-columns: 12rem minmax(0, 1fr);
+      column-gap: var(--space-7);
+    }
+    .docs__head {
+      grid-column: 1 / -1;
+    }
+    .toc {
+      position: sticky;
+      top: var(--space-4);
+      align-self: start;
+    }
+    .toc ul {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .toc a {
+      border-color: transparent;
+    }
+  }
+
+  /* ---- body ------------------------------------------------------------ */
+  .docs__body {
+    max-width: 46rem;
+    min-width: 0;
+  }
+  .docs__body > section + section {
+    margin-top: var(--space-8);
+  }
+  .docs__body h2 {
+    padding-bottom: var(--space-2);
+    margin-bottom: var(--space-4);
+    border-bottom: 2px solid var(--fg);
+  }
+  .docs__body h3 {
+    margin-top: var(--space-6);
+    margin-bottom: var(--space-3);
+  }
+  .docs__body p {
+    max-width: var(--measure);
+  }
+  .docs__body p + p,
+  .docs__body p + table,
+  .docs__body table + p,
+  .docs__body table + table,
+  .docs__body dl + p,
+  .docs__body ol + p {
+    margin-top: var(--space-4);
+  }
+  .docs__body :target {
+    scroll-margin-top: var(--space-4);
+  }
+  .small {
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+
+  /* ---- tables ---------------------------------------------------------- */
+  .docs__body table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .docs__body caption {
+    padding-bottom: var(--space-2);
+    font-weight: 700;
+    text-align: left;
+  }
+  .docs__body th,
+  .docs__body td {
+    padding: var(--space-2) var(--space-3) var(--space-2) 0;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--rule);
+  }
+  .docs__body thead th {
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    border-bottom-color: var(--edge);
+  }
+  .docs__body tbody th {
+    font-weight: 700;
+  }
+  .wiz__n {
+    width: 3.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .wiz th[scope='row'] {
+    width: 9rem;
+  }
+  .keytable {
+    margin-top: var(--space-5);
+  }
+  /* The key column fits its widest key on a phone, and lines up across the
+     tables from 40em. */
+  .keytable td:first-child {
+    width: 1%;
+    padding-right: var(--space-4);
+    white-space: nowrap;
+  }
+  @media (min-width: 40em) {
+    .keytable td:first-child {
+      width: 11rem;
+    }
+  }
+  .keytable + .small {
+    margin-top: var(--space-2);
+  }
+  .config,
+  .limits {
+    margin-top: var(--space-4);
+  }
+  .config th[scope='row'],
+  .limits th[scope='row'] {
+    width: 13rem;
+  }
+
+  /* ---- definition rows: term on the left, definition on the right ------ */
+  .spec {
+    border-top: 1px solid var(--rule);
+  }
+  .spec > div {
+    display: grid;
+    gap: var(--space-1);
+    padding-block: var(--space-3);
+    border-bottom: 1px solid var(--rule);
+  }
+  .spec dt {
+    font-weight: 600;
+  }
+  .spec > div:target {
+    background: var(--well);
+    box-shadow: -0.75rem 0 0 var(--well), 0.75rem 0 0 var(--well);
+  }
+  @media (min-width: 40em) {
+    .spec > div {
+      grid-template-columns: 16rem minmax(0, 1fr);
+      column-gap: var(--space-5);
+    }
+    .spec--narrow > div {
+      grid-template-columns: 11rem minmax(0, 1fr);
+    }
+  }
+
+  .keep,
+  .proc {
+    display: grid;
+    gap: var(--space-2);
+    padding-left: 1.75em;
+  }
+  .keep {
+    margin-top: var(--space-2);
+  }
+  .proc li::marker {
+    font-weight: 700;
+  }
+  .ways {
+    display: grid;
+    gap: var(--space-2);
+    padding-left: 1.25em;
+  }
+
+  /* Commands in a procedure or an example: a well that wraps. */
+  .docs__body pre {
+    margin-top: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    background: var(--well);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-control);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .docs__body pre code {
+    font-size: 1em;
+  }
+  .examples {
+    display: grid;
+    gap: var(--space-4);
+  }
+</style>

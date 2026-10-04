@@ -31,6 +31,7 @@ var names = map[string]bool{
 	".temporaryitems":         true,
 	".trashes":                true,
 	".vol":                    true,
+	"__macosx":                true, // Finder's zip sidecar folder
 
 	// Windows
 	"thumbs.db":                 true,
@@ -43,6 +44,10 @@ var names = map[string]bool{
 	// Linux
 	".trash":      true,
 	".trash-1000": true,
+
+	// SuperDirectory's own record of a run, inside every superdirectory. Copying
+	// a superdirectory again must not copy the last run's report into the new one.
+	".superdirectory": true,
 }
 
 // IsMetadata reports whether name — one path element, not a full path — is

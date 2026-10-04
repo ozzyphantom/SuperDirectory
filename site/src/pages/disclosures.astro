@@ -1,0 +1,78 @@
+---
+import Base from '../layouts/Base.astro';
+import ExternalLink from '../components/ExternalLink.astro';
+
+/* The AI-text disclosure (UX standard [02.3]) and the source material behind
+   the AI-formalized definitions ([02.4]). Factual statements only. */
+const UPDATED = '2026-10-03';
+---
+
+<Base
+  title="Disclosures · SuperDirectory"
+  description="Which text on this site an AI wrote, which text a person writes, and what the site stores and sends."
+  current="disclosures"
+>
+  <div class="wrap disclosures">
+    <h1>Disclosures</h1>
+    <p class="disclosures__meta">Updated <time datetime={UPDATED}>{UPDATED}</time>.</p>
+
+    <section aria-labelledby="ai-written">
+      <h2 id="ai-written">AI-written text</h2>
+      <p>Claude, an AI model made by Anthropic, wrote this text on the site:</p>
+      <ul>
+        <li>The technical definitions: the feature list on the <a href="/">home page</a>, and the <a href="/docs/">docs</a>.</li>
+        <li>The procedures: the install steps on the home page, and the steps in the docs.</li>
+        <li>The labels: navigation, headings, buttons, status messages, and this page.</li>
+      </ul>
+      <p>It also built the site’s code and layout.</p>
+      <p>The definitions come from the program’s own help text and the <ExternalLink href="https://github.com/ozzyphantom/SuperDirectory#readme">SuperDirectory README</ExternalLink>.</p>
+    </section>
+
+    <section aria-labelledby="human-written">
+      <h2 id="human-written">Human-written text</h2>
+      <p>A dashed box that starts with <code>[COPY ·</code> marks a place for text that a person writes. The person’s text replaces the box. Text in those places is human-written.</p>
+    </section>
+
+    <section aria-labelledby="program-text">
+      <h2 id="program-text">Program text</h2>
+      <p>The terminal block on the home page shows SuperDirectory’s own interface text, unchanged.</p>
+    </section>
+
+    <section aria-labelledby="tracking">
+      <h2 id="tracking">Tracking</h2>
+      <p>This site sets no cookies and runs no analytics. Its pages load nothing from other servers.</p>
+      <p>The install method you choose on the home page is kept in this browser tab’s session storage, so the page keeps your choice when you come back to it. It is not sent anywhere, and it is deleted when you close the tab.</p>
+    </section>
+  </div>
+</Base>
+
+<style is:global>
+  .disclosures {
+    padding-top: var(--space-7);
+  }
+  .disclosures__meta {
+    margin-top: var(--space-2);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+  .disclosures section {
+    margin-top: var(--space-7);
+  }
+  .disclosures h2 {
+    margin-bottom: var(--space-3);
+  }
+  .disclosures p,
+  .disclosures ul {
+    max-width: var(--measure);
+  }
+  .disclosures p + p,
+  .disclosures p + ul,
+  .disclosures ul + p {
+    margin-top: var(--space-3);
+  }
+  .disclosures ul {
+    display: grid;
+    gap: var(--space-2);
+    padding-left: 1.25em;
+  }
+</style>

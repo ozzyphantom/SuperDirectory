@@ -1,0 +1,49 @@
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Content-Signal: search=yes, ai-input=yes, ai-train=yes
+  Link: </llms.txt>; rel="describedby"; type="text/plain"
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# CSP notes
+#   default-src  'none': everything not listed below is refused. The site
+#                loads its own scripts and stylesheets and nothing else: no
+#                fonts (system faces), no images (the wordmark is inline
+#                SVG), no fetch, no frames, no forms.
+#   script-src   'self' only, no 'unsafe-inline'. The one script is
+#                /scripts/site.js; an inline <script> would be silently dead
+#                in production while still working in dev.
+#   style-src    'self' only, no 'unsafe-inline': astro.config.mjs sets
+#                build.inlineStylesheets to 'never', so every page links its
+#                CSS from /_astro/ and no page ships a <style> block or a
+#                style attribute.
+#   img-src      data: only, for the empty icon in Base.astro, which stops
+#                browsers asking for /favicon.ico.
+#   base-uri, form-action
+#                'none': the site has no <base> and no forms.
+#
+# Other headers
+#   Referrer-Policy  matches Personal-Site. GitHub, the one outbound
+#                destination, sees this origin and no path.
+#   Permissions-Policy  denies the powerful features the site never uses.
+#                Clipboard writes for the copy buttons need no entry: the
+#                default allows this origin.
+#   COOP, CORP   isolate the browsing context and refuse cross-origin
+#                embedding of any resource here.
+#   Content-Signal  mirrors robots.txt (search, ai-input and ai-train all
+#                yes) and functions/_middleware.js. Keep the three in step.
+#   Link describedby for /llms.txt: a resource that describes this one.
+#                rel=alternate for the Markdown editions is NOT set here:
+#                _headers matches on path only, so the middleware sets it
+#                per page, and Base.astro mirrors it as a <link>.
+#
+# /_astro/* holds Astro's fingerprinted build files: a changed file gets a
+# new name, so the old one can be cached for a year.

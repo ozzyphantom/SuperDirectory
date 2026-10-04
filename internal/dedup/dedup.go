@@ -22,15 +22,12 @@ import (
 	"time"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // partialHashBytes is how much of a file the second stage reads. One filesystem
 // block is plenty to separate two different photographs of the same size.
 const partialHashBytes = 64 << 10
-
-// pollInterval is how often a hash in flight is checked for a stall. A var so tests
-// need not wait.
-var pollInterval = 100 * time.Millisecond
 
 // Options configure Find.
 type Options struct {
@@ -134,14 +131,23 @@ func Find(items []flatten.Item, opts Options) Result {
 			}
 			report(Progress{Phase: Sizing, Done: i, Total: len(items)})
 		}
-		info, err := os.Stat(it.Src)
-		if err != nil || info.Size() == 0 {
-			// Unstattable files are left alone. Empty files are all "identical" to
-			// each other, which is true and useless; skipping them avoids proposing
-			// to delete a directory full of zero-byte placeholders.
+		// The walk already measured the files it planned; only a plan built by
+		// hand, with no modification time, is measured here.
+		size := it.Size
+		if it.ModTime.IsZero() {
+			info, err := os.Stat(it.Src)
+			if err != nil {
+				continue // unstattable files are left alone
+			}
+			size = info.Size()
+		}
+		if size == 0 {
+			// Empty files are all "identical" to each other, which is true and
+			// useless; skipping them avoids proposing to delete a directory full of
+			// zero-byte placeholders.
 			continue
 		}
-		bySize[info.Size()] = append(bySize[info.Size()], i)
+		bySize[size] = append(bySize[size], i)
 	}
 
 	// Only sizes shared by more than one file are worth reading. The size travels
@@ -173,13 +179,13 @@ func Find(items []flatten.Item, opts Options) Result {
 			span = limit
 		}
 		report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Size: span})
-		r := reader{stall: opts.StallTimeout, cancel: opts.Cancel, onRead: func(n int64) {
+		r := guard.Reader{Stall: opts.StallTimeout, Cancel: opts.Cancel, OnRead: func(n int64) {
 			report(Progress{Phase: Hashing, Done: done, Total: total, Current: name, Read: n, Size: span})
 		}}
-		sum, err := r.hash(items[idx].Src, limit)
+		sum, err := hashFile(r, items[idx].Src, limit)
 		done++
 		switch {
-		case errors.Is(err, errCanceled):
+		case errors.Is(err, guard.ErrCanceled):
 			res.Canceled = true
 			return "", false
 		case err != nil:

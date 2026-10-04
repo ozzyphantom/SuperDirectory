@@ -1,0 +1,307 @@
+---
+/* The three install methods, as tabs.
+
+   Without JavaScript this is three plain sections, one under the other, each
+   under its own heading, and nothing on the page is dead. public/scripts/
+   site.js turns it into the ARIA tabs pattern (UX standard [06.1]): it adds
+   the roles, and arrow keys, Home and End move between tabs.
+
+   Which panel shows, and which tab is drawn as selected, comes from the
+   data-install attribute on <html>. site.js sets it in <head>, before first
+   paint, from the reader's OS (UX standard [13.5]): Homebrew on a Mac, the
+   download on Windows and Linux. A choice the reader makes is kept for the
+   browser tab's session, so coming back to the page keeps it ([08.1]).
+
+   The steps are procedures in Simplified Technical English (UX standard
+   [02.5]): short imperative sentences, one action each. */
+import Command from './Command.astro';
+import ExternalLink from './ExternalLink.astro';
+import Key from './Key.astro';
+
+const RELEASES = 'https://github.com/ozzyphantom/SuperDirectory/releases/latest';
+---
+
+<div class="install-box">
+  <div class="tabs-row" data-md-skip>
+    <div class="tabs" data-tabs="Install method">
+      <button type="button" class="tab" data-tab="brew">Homebrew</button>
+      <button type="button" class="tab" data-tab="download">Download</button>
+      <button type="button" class="tab" data-tab="go">Go</button>
+    </div>
+    <p class="tabs-keys" aria-hidden="true"><Key k="left" /> <Key k="right" /> switch method</p>
+  </div>
+
+  <section class="panel" id="install-brew" aria-labelledby="install-brew-h">
+    <h3 class="panel__h" id="install-brew-h">Homebrew</h3>
+    <dl class="facts">
+      <div><dt>Systems</dt><dd>macOS, Linux</dd></div>
+      <div><dt>Requires</dt><dd><ExternalLink href="https://brew.sh/">Homebrew</ExternalLink></dd></div>
+    </dl>
+    <ol class="steps">
+      <li>Open a terminal.</li>
+      <li>Run this command:<Command text="brew install ozzyphantom/tap/superdirectory" /></li>
+      <li>Run <code>superdirectory</code> to start the wizard.</li>
+    </ol>
+  </section>
+
+  <section class="panel" id="install-download" aria-labelledby="install-download-h">
+    <h3 class="panel__h" id="install-download-h">Download</h3>
+    <dl class="facts">
+      <div><dt>Systems</dt><dd>macOS, Windows, Linux</dd></div>
+    </dl>
+    <p class="release"><ExternalLink class="release__link" href={RELEASES}>Latest release</ExternalLink></p>
+
+    <div class="os-steps">
+      <section aria-labelledby="dl-mac-h">
+        <h4 id="dl-mac-h">macOS <span class="this-os" data-os-tag="mac" data-md-skip>This computer</span></h4>
+        <ol class="steps">
+          <li>Download the macOS archive for your processor from the latest release.</li>
+          <li>Double-click the archive to unpack it.</li>
+          <li>Open Terminal in the unpacked folder.</li>
+          <li>Run <code>./superdirectory</code>.</li>
+        </ol>
+      </section>
+      <section aria-labelledby="dl-windows-h">
+        <h4 id="dl-windows-h">Windows <span class="this-os" data-os-tag="windows" data-md-skip>This computer</span></h4>
+        <ol class="steps">
+          <li>Download the Windows archive for your processor from the latest release.</li>
+          <li>Right-click the archive.</li>
+          <li>Select Extract All.</li>
+          <li>Open Terminal in the extracted folder.</li>
+          <li>Run <code>.\superdirectory.exe</code>.</li>
+        </ol>
+      </section>
+      <section aria-labelledby="dl-linux-h">
+        <h4 id="dl-linux-h">Linux <span class="this-os" data-os-tag="linux" data-md-skip>This computer</span></h4>
+        <ol class="steps">
+          <li>Download the Linux archive for your processor from the latest release.</li>
+          <li>Open a terminal in the download folder.</li>
+          <li>Run <code>tar -xzf ARCHIVE</code>. ARCHIVE is the name of the file you downloaded.</li>
+          <li>Run <code>./superdirectory</code>.</li>
+        </ol>
+      </section>
+    </div>
+
+    <h4 class="arch__h">Processor names in the archive names</h4>
+    <dl class="arch">
+      <div><dt><code>arm64</code></dt><dd>Apple silicon and other Arm processors</dd></div>
+      <div><dt><code>amd64</code>, <code>x86_64</code></dt><dd>Intel and AMD processors</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel" id="install-go" aria-labelledby="install-go-h">
+    <h3 class="panel__h" id="install-go-h">Go</h3>
+    <dl class="facts">
+      <div><dt>Systems</dt><dd>macOS, Windows, Linux</dd></div>
+      <div><dt>Requires</dt><dd><ExternalLink href="https://go.dev/dl/">Go</ExternalLink> 1.26 or newer</dd></div>
+    </dl>
+    <ol class="steps">
+      <li>Open a terminal.</li>
+      <li>Run this command:<Command text="go install github.com/ozzyphantom/SuperDirectory@latest" /></li>
+      <li>Run <code>SuperDirectory</code> to start the wizard.</li>
+    </ol>
+    <p class="note">Go names the program after its module: <code>SuperDirectory</code>, with capitals. It goes into the <code>bin</code> folder of the path that <code>go env GOPATH</code> prints. If the terminal cannot find the program, add that folder to <code>PATH</code>.</p>
+  </section>
+
+  <p class="copy-status vh" role="status" data-copy-status data-md-skip></p>
+</div>
+
+<style is:global>
+  .install-box {
+    max-width: 46rem;
+    margin-top: var(--space-4);
+  }
+
+  /* ---- the tab row: only once site.js has run ------------------------- */
+  .tabs-row {
+    display: none;
+  }
+  .js .tabs-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3) var(--space-5);
+    margin-bottom: var(--space-5);
+  }
+
+  /* A segmented switch: one frame, three positions. The selected position is
+     filled; the others are open. */
+  .tabs {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    border: 2px solid var(--fg);
+    border-radius: calc(var(--radius-control) + 4px);
+  }
+  .tab {
+    min-height: var(--target);
+    padding: 0 var(--space-5);
+    color: var(--fg);
+    background: transparent;
+    font: inherit;
+    font-size: 1rem;
+    font-weight: 700;
+    border: 0;
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+  .tab:hover {
+    background: var(--well);
+  }
+  .tab:active {
+    background: var(--rule);
+    transform: translateY(1px);
+  }
+  /* The ring sits inside the button, so the frame never hides it. */
+  .tab:focus-visible {
+    outline: 3px solid var(--fg);
+    outline-offset: -7px;
+  }
+  .js[data-install='brew'] .tab[data-tab='brew'],
+  .js[data-install='download'] .tab[data-tab='download'],
+  .js[data-install='go'] .tab[data-tab='go'] {
+    color: var(--bg);
+    background: var(--fg);
+    outline-color: var(--bg);
+  }
+
+  .tabs-keys {
+    display: none;
+    color: var(--fg-2);
+    font-size: 1rem;
+  }
+  /* Only where there is a keyboard and a pointer to hover with. */
+  @media (hover: hover) and (pointer: fine) {
+    .js .tabs-keys {
+      display: block;
+    }
+  }
+
+  /* ---- panels --------------------------------------------------------- */
+  .panel + .panel {
+    margin-top: var(--space-7);
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--rule);
+  }
+  .panel__h {
+    margin-bottom: var(--space-3);
+  }
+  .js .panel {
+    display: none;
+  }
+  .js .panel + .panel {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+  /* With tabs, the tab names the panel; the heading stays for assistive
+     technology and the Markdown edition. */
+  .js .panel__h {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .js[data-install='brew'] #install-brew,
+  .js[data-install='download'] #install-download,
+  .js[data-install='go'] #install-go {
+    display: block;
+    animation: panel-in 140ms ease-out;
+  }
+  /* The panel drops in from the tab row above it (UX standard [04.4]). */
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  .panel:focus-visible {
+    outline-offset: 8px;
+  }
+
+  /* ---- contents ------------------------------------------------------- */
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-6);
+    margin-bottom: var(--space-4);
+    font-size: var(--text-sm);
+  }
+  .facts div {
+    display: flex;
+    gap: var(--space-2);
+  }
+  .facts dt {
+    color: var(--fg-2);
+  }
+  .facts dd {
+    font-weight: 600;
+  }
+
+  .steps {
+    display: grid;
+    gap: var(--space-3);
+    max-width: var(--measure);
+    padding-left: 1.75em;
+  }
+  .steps li {
+    padding-left: var(--space-1);
+  }
+  .steps li::marker {
+    font-weight: 700;
+  }
+
+  .release {
+    margin-bottom: var(--space-5);
+  }
+  .release__link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--target);
+    font-weight: 700;
+  }
+
+  .os-steps {
+    display: grid;
+    gap: var(--space-6);
+  }
+  .os-steps h4 {
+    margin-bottom: var(--space-3);
+  }
+
+  .arch__h {
+    margin-top: var(--space-6);
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+  }
+  .arch {
+    display: grid;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
+  }
+  .arch div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--space-3);
+  }
+  .arch dt {
+    min-width: 10rem;
+  }
+
+  .note {
+    max-width: var(--measure);
+    margin-top: var(--space-5);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+
+  /* Visible only when the copy falls back to selecting the command. */
+  .copy-status {
+    margin-top: var(--space-4);
+    font-weight: 600;
+  }
+</style>

@@ -1,0 +1,25 @@
+{
+  "name": "superdirectory-site",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.27.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build && node scripts/build-md.mjs",
+    "check": "node scripts/check-links.mjs && node scripts/check-copy.mjs",
+    "verify": "pnpm run build && pnpm run check",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.4",
+    "astro": "^7.3.5"
+  },
+  "devDependencies": {
+    "node-html-parser": "^9.0.4"
+  }
+}

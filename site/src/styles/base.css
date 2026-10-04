@@ -1,0 +1,165 @@
+/* Element defaults and the page frame. Values come from tokens.css; each
+   component carries its own CSS beside its markup; page layout stays with
+   its page. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading);
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 700;
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+h1 { font-size: var(--text-h1); letter-spacing: -0.02em; }
+h2 { font-size: var(--text-h2); letter-spacing: -0.01em; }
+h3 { font-size: var(--text-h3); }
+h4 { font-size: 1em; }
+
+p,
+ul,
+ol,
+dl,
+dd,
+figure,
+pre,
+table {
+  margin: 0;
+}
+
+::selection {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+/* ---- links: underlined text. Hover thickens the line; a press fills ---- */
+a {
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+a:hover {
+  text-decoration-thickness: 3px;
+}
+a:active {
+  background: var(--well);
+}
+
+/* One focus ring for everything: 3px, full contrast, outside the element. */
+:focus-visible {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+
+/* ---- machine text: what a person types, or the program prints ---------- */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+:not(pre) > code {
+  padding: 0.05em 0.3em;
+  background: var(--well);
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- frame ------------------------------------------------------------ */
+.wrap {
+  width: 100%;
+  max-width: 64rem;
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* Visually hidden, still read by assistive technology. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The first stop for a keyboard: jump past the header to the content. */
+.skip {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--gutter);
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target);
+  padding-inline: var(--space-4);
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: var(--radius-control);
+  transform: translateY(-200%);
+}
+.skip:focus {
+  transform: none;
+}
+.skip:hover {
+  text-decoration: underline;
+}
+.skip:active {
+  transform: translateY(1px);
+}
+
+/* A label printed on the hardware: which OS row matches this computer.
+   Shown only when public/scripts/site.js has named the OS. */
+.this-os {
+  display: none;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.6;
+  vertical-align: 0.1em;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-key);
+}
+[data-os="mac"] [data-os-tag="mac"],
+[data-os="windows"] [data-os-tag="windows"],
+[data-os="linux"] [data-os-tag="linux"] {
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

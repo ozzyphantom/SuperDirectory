@@ -1,0 +1,263 @@
+---
+import Base from '../layouts/Base.astro';
+import Placeholder from '../components/Placeholder.astro';
+import InstallTabs from '../components/InstallTabs.astro';
+import Terminal from '../components/Terminal.astro';
+import Key from '../components/Key.astro';
+
+/* The feature list: one technical definition per feature (UX standard
+   [02.2]), no selling. Each row names the control that drives it: a flag of
+   `superdirectory copy`, a command, a key, or nothing because it is
+   automatic. Definitions hold literal markup only (inline <code>). */
+type Control =
+  | { flags: string[]; note?: string }
+  | { command: string }
+  | { key: string }
+  | { auto: true };
+type Feature = { name: string; def: string; ctl: Control };
+type Group = { id: string; name: string; items: Feature[] };
+
+const groups: Group[] = [
+  {
+    id: 'copying',
+    name: 'Copying',
+    items: [
+      { name: 'Flatten', def: 'Copies every file into one folder, with each subfolder’s name as a prefix on its files.', ctl: { flags: ['--layout flat'] } },
+      { name: 'Organize by type', def: 'Copies each file into a <code>Category/extension/</code> folder, such as <code>Images/jpg/</code>.', ctl: { flags: ['--layout type'] } },
+      { name: 'Organize by date taken', def: 'Sorts pictures into folders by the date each was taken.', ctl: { flags: ['--layout date'] } },
+      { name: 'Flatten below a depth', def: 'Keeps the top N folder levels and flattens everything below them.', ctl: { flags: ['--layout depth', '--depth N'] } },
+      { name: 'Several sources', def: 'Copies two or more source folders into one new folder.', ctl: { flags: ['--from DIR'], note: 'once per source' } },
+    ],
+  },
+  {
+    id: 'choosing',
+    name: 'Choosing files',
+    items: [
+      { name: 'Exclude folders', def: 'Skips a folder and everything inside it.', ctl: { flags: ['--exclude DIR'] } },
+      { name: 'Skip name patterns', def: 'Skips files and folders whose names match a pattern, such as <code>*.tmp</code> or <code>node_modules</code>.', ctl: { flags: ['--skip PATTERN'] } },
+      { name: 'Filter by type, size, date', def: 'Copies only the files inside the categories, extensions, size range, and modified-date range you set.', ctl: { flags: ['--only', '--not', '--min-size', '--max-size', '--since', '--until'] } },
+    ],
+  },
+  {
+    id: 'duplicates',
+    name: 'Duplicates',
+    items: [
+      { name: 'Identical files', def: 'Finds files with the same bytes and copies one from each set.', ctl: { flags: ['--duplicates identical'] } },
+      { name: 'Smaller copies of pictures', def: 'Finds the same picture at a lower resolution and copies only the largest.', ctl: { flags: ['--duplicates pictures'] } },
+      { name: 'Near-duplicate documents', def: 'Finds documents with mostly the same text and copies only the newest.', ctl: { flags: ['--duplicates documents'] } },
+      { name: 'Review one by one', def: 'Shows each duplicate set for a decision before anything is skipped.', ctl: { flags: ['--review'] } },
+    ],
+  },
+  {
+    id: 'documents',
+    name: 'Documents and NotebookLM',
+    items: [
+      { name: 'Rename to real titles', def: 'Names each document after the title inside it.', ctl: { flags: ['--rename-titles'] } },
+      { name: 'Detect type by content', def: 'Sorts and names files by their content, not their extension.', ctl: { flags: ['--detect-types'] } },
+      { name: 'Expand .zip, .tar, .chm', def: 'Unpacks <code>.zip</code>, <code>.tar</code>, and <code>.chm</code> files found in the sources.', ctl: { flags: ['--expand'] } },
+      { name: 'Merge text into large files', def: 'Joins the text documents of each folder into Markdown files of at most 400,000 words or 150 MB.', ctl: { flags: ['--merge-text'] } },
+      { name: 'Split into upload batches', def: 'Splits the output into folders of at most N files.', ctl: { flags: ['--batch N'] } },
+    ],
+  },
+  {
+    id: 'reliability',
+    name: 'Reliability',
+    items: [
+      { name: 'Resume an interrupted copy', def: 'Finishes a copy that stopped before the end.', ctl: { command: 'superdirectory resume TARGET' } },
+      { name: 'Pause', def: 'Pauses a running copy in the wizard; a second press continues it.', ctl: { key: 'p' } },
+      { name: 'Stall detection', def: 'Abandons a file that sends no data for 60 seconds, records it, and continues.', ctl: { auto: true } },
+      { name: 'Retry failed files', def: 'Tries each failed file again, N times (default 1).', ctl: { flags: ['--retries N'] } },
+      { name: 'Verify copies', def: 'Reads every copy again and compares it with its source.', ctl: { flags: ['--verify'] } },
+      { name: 'Free-space check', def: 'Checks the free space on the target before the copy starts, and stops the copy when the target is full.', ctl: { auto: true } },
+      { name: 'Instant copies on one volume', def: 'Clones each file instead of copying its bytes when the source and the target are on the same APFS, Btrfs or XFS volume.', ctl: { auto: true } },
+      { name: 'Clean stop', def: 'Stops the copy, deletes the partial file in flight, and keeps the files already copied.', ctl: { key: 'ctrl+c' } },
+    ],
+  },
+  {
+    id: 'records',
+    name: 'Records',
+    items: [
+      { name: 'Copy report', def: 'Writes the run’s settings, one row per file, and a summary into <code>.superdirectory/</code> inside the target.', ctl: { flags: ['--no-report'], note: 'turns it off' } },
+      { name: 'Presets', def: 'Saves a set of copy settings under a name, for the next run.', ctl: { flags: ['--save-preset NAME', '--preset NAME'] } },
+      { name: 'Desktop notification', def: 'Shows a desktop notification when the copy finishes.', ctl: { flags: ['--notify'] } },
+    ],
+  },
+];
+---
+
+<Base title="SuperDirectory" description="[COPY · home-meta-description · 120–160 characters: what SuperDirectory does, for search results and link previews]" current="home">
+  <section class="hero">
+    <div class="wrap">
+      <Placeholder as="h1" id="home-hero-heading" length="6–10 words" kind="what SuperDirectory does" class="hero__title" />
+      <Placeholder id="home-hero-subline" length="1 sentence, 15–25 words" kind="who it is for and the problem it solves" class="hero__sub" />
+    </div>
+  </section>
+
+  <section class="install" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <h2 id="install-h">Install</h2>
+      <InstallTabs />
+    </div>
+  </section>
+
+  <div class="wrap demo">
+    <Terminal />
+  </div>
+
+  <section class="features" id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <h2 id="features-h">Features</h2>
+      <Placeholder id="home-features-intro" length="1–2 sentences" kind="intro to the feature list" class="features__intro" />
+
+      {
+        groups.map((g) => (
+          <section class="group" id={g.id} aria-labelledby={`${g.id}-h`}>
+            <h3 id={`${g.id}-h`}>{g.name}</h3>
+            <dl class="feats">
+              {g.items.map((f) => (
+                <div class="feat">
+                  <dt class="feat__name">{f.name}</dt>
+                  <dd class="feat__def" set:html={f.def} />
+                  <dd class="feat__ctl">
+                    {'flags' in f.ctl && (
+                      <>
+                        <span class="vh">{f.ctl.flags.length > 1 ? 'Flags: ' : 'Flag: '}</span>
+                        {/* A space between flags: the flex gap draws the
+                            separation; the space keeps the words apart in
+                            the text and the Markdown edition. */}
+                        {f.ctl.flags.map((fl, i) => <>{i > 0 && ' '}<code>{fl}</code></>)}
+                        {f.ctl.note && <span class="feat__note">{f.ctl.note}</span>}
+                      </>
+                    )}
+                    {'command' in f.ctl && (
+                      <>
+                        <span class="vh">Command: </span>
+                        <code>{f.ctl.command}</code>
+                      </>
+                    )}
+                    {'key' in f.ctl && (
+                      <>
+                        <span class="vh">Key: </span>
+                        <Key k={f.ctl.key} />
+                      </>
+                    )}
+                    {'auto' in f.ctl && <span class="feat__auto">Automatic</span>}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ))
+      }
+
+      <p class="features__more">Every command, flag, key, and duplicate rule: <a href="/docs/">Docs</a></p>
+    </div>
+  </section>
+</Base>
+
+<style is:global>
+  /* ---- hero ------------------------------------------------------------ */
+  .hero {
+    padding-block: var(--space-6);
+  }
+  @media (min-width: 48em) {
+    .hero {
+      padding-block: var(--space-8) var(--space-7);
+    }
+  }
+  .hero .wrap {
+    display: grid;
+    gap: var(--space-4);
+  }
+  /* The boxes hold the space the copy will take. */
+  .hero__title {
+    --slot-min: 6rem;
+    max-width: 40rem;
+  }
+  .hero__sub {
+    --slot-min: 4rem;
+    max-width: 40rem;
+  }
+
+  /* ---- install and the screen ----------------------------------------- */
+  .install h2,
+  .features h2 {
+    margin-bottom: var(--space-2);
+  }
+  .demo {
+    margin-top: var(--space-8);
+  }
+
+  /* ---- features: a spec sheet. Name, definition, control. -------------- */
+  .features {
+    margin-top: var(--space-8);
+  }
+  .features__intro {
+    margin-top: var(--space-3);
+  }
+  .group {
+    margin-top: var(--space-7);
+  }
+  .group h3 {
+    padding-bottom: var(--space-2);
+    border-bottom: 2px solid var(--fg);
+  }
+  .feat {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+    padding-block: var(--space-3);
+    border-bottom: 1px solid var(--rule);
+  }
+  .feat__name {
+    font-weight: 700;
+  }
+  .feat__def {
+    max-width: var(--measure);
+  }
+  .feat__ctl {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: 1rem;
+  }
+  .feat__note,
+  .feat__auto {
+    color: var(--fg-2);
+  }
+  /* Two columns from 40em: name and control on the left, definition on the
+     right. Three from 60em. */
+  @media (min-width: 40em) {
+    .feat {
+      grid-template-columns: 13rem minmax(0, 1fr);
+      column-gap: var(--space-5);
+    }
+    .feat__def {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+    }
+  }
+  @media (min-width: 60em) {
+    .feat {
+      grid-template-columns: 13rem minmax(0, 1fr) 15rem;
+    }
+    .feat__def {
+      grid-row: 1;
+    }
+    .feat__ctl {
+      grid-column: 3;
+      grid-row: 1;
+      align-content: start;
+    }
+  }
+
+  .features__more {
+    margin-top: var(--space-6);
+  }
+  .features__more a {
+    display: inline-block;
+    padding-block: var(--space-2);
+    font-weight: 700;
+  }
+</style>

@@ -6,13 +6,14 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/ozzyphantom/SuperDirectory/internal/exif"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 )
 
 // exifBlock builds the TIFF structure of an EXIF segment: an orientation in IFD0,
@@ -89,130 +90,18 @@ func encodePNG(t *testing.T, img image.Image) []byte {
 	return b.Bytes()
 }
 
-func TestReadJPEGHeader(t *testing.T) {
-	img := scene(600, 400, 1, 0)
-	data := cameraJPEG(t, img, img, 6)
-	h, err := readJPEGHeader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h.w != 600 || h.h != 400 || h.orientation != 6 {
-		t.Errorf("header = %dx%d orientation %d, want 600x400 orientation 6", h.w, h.h, h.orientation)
-	}
-	if w, ht := h.displayed(); w != 400 || ht != 600 {
-		t.Errorf("displayed = %dx%d, want 400x600: orientation 6 turns it a quarter", w, ht)
-	}
-	if _, err := jpeg.DecodeConfig(bytes.NewReader(h.thumb)); err != nil {
-		t.Errorf("thumbnail does not decode: %v", err)
-	}
-	if !thumbFits(h) {
-		t.Error("a same-shape thumbnail was rejected")
-	}
-}
-
-// TestReadJPEGHeaderSeeksPastLargeSegments: an ICC profile or Photoshop block can run
-// to megabytes. The header walk must skip it with a seek, not read it.
-func TestReadJPEGHeaderSeeksPastLargeSegments(t *testing.T) {
-	img := scene(300, 200, 2, 0)
-	data := withSegment(encodeJPEG(t, img, 90), 0xE2, make([]byte, 60000))
-	var n int64
-	r := &countingSeeker{r: bytes.NewReader(data), n: &n}
-	h, err := readJPEGHeader(r)
-	if err != nil || h.w != 300 || h.h != 200 {
-		t.Fatalf("header = %+v, %v", h, err)
-	}
-	if n > 4096 {
-		t.Errorf("read %d bytes to find the frame; the 60 KB segment should have been skipped", n)
-	}
-}
-
-type countingSeeker struct {
-	r io.ReadSeeker
-	n *int64
-}
-
-func (c *countingSeeker) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	*c.n += int64(n)
-	return n, err
-}
-
-func (c *countingSeeker) Seek(o int64, w int) (int64, error) { return c.r.Seek(o, w) }
-
 // TestThumbFitsRejectsALetterboxedThumbnail: a 4:3 thumbnail on a 3:2 photo carries
 // black bars, and would fingerprint a different picture.
 func TestThumbFitsRejectsALetterboxedThumbnail(t *testing.T) {
 	thumb := encodeJPEG(t, scene(160, 120, 1, 0), 75)
-	if thumbFits(header{w: 6000, h: 4000, thumb: thumb}) {
+	if thumbFits(exif.Info{Width: 6000, Height: 4000, Thumb: thumb}) {
 		t.Error("a 4:3 thumbnail was accepted for a 3:2 picture")
 	}
-}
-
-func FuzzParseExif(f *testing.F) {
-	f.Add(exifBlock(6, []byte{0xFF, 0xD8, 0xFF, 0xD9}))
-	f.Add(exifBlock(1, nil))
-	f.Add([]byte("MM\x00\x2a\x00\x00\x00\x08"))
-	f.Fuzz(func(t *testing.T, b []byte) {
-		o, thumb := parseExif(b)
-		if o < 1 || o > 8 {
-			t.Errorf("orientation %d out of range", o)
-		}
-		if thumb != nil && (len(thumb) < 4 || thumb[0] != 0xFF) {
-			t.Errorf("returned a thumbnail that is not a JPEG")
-		}
-	})
-}
-
-func FuzzReadJPEGHeader(f *testing.F) {
-	f.Add([]byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x07, 0x08, 0x00, 0x10, 0x00, 0x20})
-	f.Add([]byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x02, 0xFF, 0xD9})
-	f.Fuzz(func(t *testing.T, b []byte) {
-		readJPEGHeader(bytes.NewReader(b)) // must not panic or loop
-	})
-}
-
-// heicBoxes builds the boxes readHEICHeader looks at: ftyp, then a meta box whose
-// item properties hold the given sizes and a rotation.
-func heicBoxes(quarterTurns int, sizes ...[2]uint32) []byte {
-	box := func(typ string, body []byte) []byte {
-		b := make([]byte, 8, 8+len(body))
-		binary.BigEndian.PutUint32(b, uint32(8+len(body)))
-		copy(b[4:], typ)
-		return append(b, body...)
+	img := scene(600, 400, 1, 0)
+	h, err := exif.JPEG(bytes.NewReader(cameraJPEG(t, img, img, 1)))
+	if err != nil || !thumbFits(h) {
+		t.Errorf("a same-shape thumbnail was rejected: %v", err)
 	}
-	var props []byte
-	for _, s := range sizes {
-		body := make([]byte, 12)
-		binary.BigEndian.PutUint32(body[4:], s[0])
-		binary.BigEndian.PutUint32(body[8:], s[1])
-		props = append(props, box("ispe", body)...)
-	}
-	props = append(props, box("irot", []byte{byte(quarterTurns)})...)
-	meta := append([]byte{0, 0, 0, 0}, box("hdlr", make([]byte, 24))...)
-	meta = append(meta, box("iprp", box("ipco", props))...)
-	return append(box("ftyp", []byte("heic\x00\x00\x00\x00mif1heic")), box("meta", meta)...)
-}
-
-func TestReadHEICHeader(t *testing.T) {
-	// A phone's HEIC: 512×512 tiles, a 320×240 thumbnail, and the 4032×3024 grid.
-	data := heicBoxes(3, [2]uint32{512, 512}, [2]uint32{320, 240}, [2]uint32{4032, 3024})
-	h, err := readHEICHeader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h.w != 4032 || h.h != 3024 {
-		t.Errorf("size = %dx%d, want the largest, 4032x3024", h.w, h.h)
-	}
-	if w, ht := h.displayed(); w != 3024 || ht != 4032 {
-		t.Errorf("displayed = %dx%d, want 3024x4032: three quarter turns", w, ht)
-	}
-}
-
-func FuzzHEICProperties(f *testing.F) {
-	f.Add(heicBoxes(1, [2]uint32{100, 50})[28:])
-	f.Fuzz(func(t *testing.T, b []byte) {
-		heicProperties(b) // must not panic
-	})
 }
 
 // similarFixture writes a picture library and returns its plan. Names say what each
@@ -401,7 +290,7 @@ func TestFindSimilarHEIC(t *testing.T) {
 	}
 	os.Remove(src)
 
-	if h, err := guarded(reader{}, heic, func(f io.ReadSeeker) (header, error) { return readHEICHeader(f) }); err != nil || h.w != 1200 || h.h != 800 {
+	if h, err := guard.Read(guard.Reader{}, heic, func(f exif.File) (exif.Info, error) { return exif.HEIC(f) }); err != nil || h.Width != 1200 || h.Height != 800 {
 		t.Fatalf("HEIC header = %+v, %v; want 1200x800", h, err)
 	}
 

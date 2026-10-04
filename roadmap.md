@@ -53,9 +53,13 @@ module is now `github.com/ozzyphantom/SuperDirectory`, so `go install …@latest
 
 ## Next steps (build order)
 
-1. Test the organize mode's UX in a real terminal; react to the mode and layout screens.
-2. Wire up GoReleaser + Developer ID notarization for real cross-platform releases.
-3. Add the remaining content-aware features on the `Extractor` seam: dedup hashing, search.
+1. Oscar's test pass on the feature round below: the 11,041-photo copy to the external
+   drive, HEIC dates from real iPhone files, and real `.chm` files.
+2. Release setup, which needs Oscar's accounts: the `homebrew-tap` repository, the GitHub
+   secrets, and the Developer ID certificate. [RELEASING.md](./RELEASING.md) has the steps.
+   GoReleaser itself is wired and builds a snapshot.
+3. A domain for the site in `site/`, then the copy placeholders in `site/COPY.md`.
+4. Search over a superdirectory, the one content-aware idea not yet built.
 
 ## Organize by file type (2026-07-08) — done
 
@@ -341,13 +345,61 @@ siblings that differ only in case on a case-sensitive volume (safe direction); a
 exclusion tree does not yet restore *scroll/expansion* state on re-entry, only the chosen
 set.
 
+## Feature round (2026-10-03) — built, awaiting Oscar's test
+
+Twenty-five features, picked by Oscar from a brainstormed list, built on branch `features`.
+The [README](./README.md) documents each one; this section records the decisions.
+
+**One engine, two front ends.** A run is now a `job.Job`: every setting, validated, and
+saveable as a preset. `engine.Run` carries a job through its stages (walk, inspect, expand,
+plan, duplicates, merge, batch, copy, report) and asks its questions through a `Hooks`
+interface. The wizard answers with menus; the new `copy` command answers from its flags. The
+engine has no screen code, so both front ends behave the same.
+
+**The time left says how sure it is.** Oscar's ask: an estimate must not "lie". It shows
+`estimating…` for the first 5 s or 1% of the bytes, `~4m left, rough` while the rate moves,
+and `~4m left` once the rate holds within 20% for 10 s. It counts bytes, which reverses the
+July choice to track files: the walk now measures every file. The July cost stands (175 ms
+per 2,000 files on exFAT, against 4 ms), but the sizes and times now feed the filters, the
+space check, resume, the report and the estimate, so the walk pays it once for all of them.
+
+**Big copies.** Pause (`p`) holds between chunks, so a hot drive can cool part way through a
+large file. Resume skips files already at the destination with the same size and time. A
+copy onto a full drive stops at the first file that does not fit, not after failing every
+remaining file. Verify reads each copy back against the source's SHA-256. Clones replace
+copies on one APFS, Btrfs or XFS volume. Tested on exFAT: 3,004 files (8.0 GB) copied, then
+stopped, resumed and verified, every file byte-identical.
+
+**Duplicates, three kinds, reviewed before skipping.** Identical files and smaller pictures
+were done; near-duplicate documents join them (MinHash over five-word runs, in
+`internal/textdup`, keeping the newest, comparing only to the file kept). A review screen
+shows each set, with half-block thumbnails of pictures, and nothing is skipped until it ends.
+
+**Documents.** Titles (`internal/title`), type by content (`internal/sniff`), text from
+HTML, RTF, Word, ODT, EPUB and PDF (`internal/textual`, `internal/pdf`), and merging into
+NotebookLM-sized Markdown files (`internal/merge`). Every reader is pure Go and fuzzed, so
+the polyglot seam above is still unneeded: the Python helper would now be for OCR only.
+Archives expand one level, with limits that stop a zip bomb; `.chm` help files unpack
+through `internal/chm`.
+
+**Decisions Oscar made.** Fixes landed by branch and PR. RAW and its JPEG are both kept. HEIC
+is compared on macOS only, through `sips`. Among identical files, the name that does not read
+as a copy is kept. Releases go to GitHub and a Homebrew tap, notarized. The site lives in
+`site/`, and the domain comes later.
+
+**Agents built eight packages in parallel** (`review`, `textdup`, `sniff`, `title`,
+`textual`, `merge`, `pdf`, `chm`), each to a fixed API, in its own worktree. The engine wiring,
+the front ends and the end-to-end runs were done in the main session.
+
 ## Feature ideas
 
-- Option to scrape all titles from the documents listed.
+- Option to scrape all titles from the documents listed. — done 2026-10-03: `--rename-titles`.
 - Content-based classification: a `.pdf` renamed `.txt` is currently sorted as text. The
-  `extract.sniff` MIME detector could settle it, at the cost of opening every file.
-- A user-editable extension→category table (today it is compiled into `organize.go`).
+  `extract.sniff` MIME detector could settle it, at the cost of opening every file. — done
+  2026-10-03: `--detect-types`, through `internal/sniff`.
+- A user-editable extension→category table (today it is compiled into `organize.go`). — done
+  2026-10-03: `superdirectory categories --write`.
 - Canonicalize extension aliases (`jpeg`→`jpg`, `tif`→`tiff`, `htm`→`html`) so organize
-  mode does not split one file type across two folders.
+  mode does not split one file type across two folders. — done 2026-10-03.
 - A user-visible toggle for the metadata skip list, for the rare source where `._*` files are
   the content (a forensic image, an AppleDouble archive).

@@ -2,263 +2,12 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/charmbracelet/x/ansi"
-
-	"github.com/ozzyphantom/SuperDirectory/internal/dedup"
-	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
+	"github.com/ozzyphantom/SuperDirectory/internal/job"
 )
-
-func TestHumanBytes(t *testing.T) {
-	cases := map[int64]string{
-		0:             "0 B",
-		999:           "999 B",
-		1000:          "1.0 kB",
-		1_500_000:     "1.5 MB",
-		52_400_000:    "52.4 MB",
-		4_200_000_000: "4.2 GB",
-	}
-	for n, want := range cases {
-		if got := humanBytes(n); got != want {
-			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
-func TestHumanRate(t *testing.T) {
-	// A copy of zero-byte files has no meaningful rate, and must not print "0.0".
-	if got := humanRate(0); !strings.HasPrefix(got, "—") {
-		t.Errorf("humanRate(0) = %q, want an em-dash placeholder", got)
-	}
-	if got := humanRate(-5); !strings.HasPrefix(got, "—") {
-		t.Errorf("humanRate(negative) = %q, want an em-dash placeholder", got)
-	}
-	if got := humanRate(58_300_000); got != "58.3 MB/s" {
-		t.Errorf("humanRate = %q, want 58.3 MB/s", got)
-	}
-}
-
-func TestHumanDuration(t *testing.T) {
-	cases := map[time.Duration]string{
-		120 * time.Millisecond:                       "0.1s",
-		3 * time.Second:                              "3s",
-		59 * time.Second:                             "59s",
-		130 * time.Second:                            "2m10s",
-		time.Hour + 5*time.Minute:                    "1h05m",
-		2*time.Hour + 30*time.Minute + 9*time.Second: "2h30m",
-	}
-	for d, want := range cases {
-		if got := humanDuration(d); got != want {
-			t.Errorf("humanDuration(%v) = %q, want %q", d, got, want)
-		}
-	}
-}
-
-func TestEstimateRemaining(t *testing.T) {
-	// Too few files: an average drawn from one sample is not an estimate.
-	if _, ok := estimateRemaining(flatten.Progress{Done: 1, Total: 100, Elapsed: time.Second}); ok {
-		t.Error("should not estimate from a single file")
-	}
-	// Finished: nothing remains.
-	if _, ok := estimateRemaining(flatten.Progress{Done: 10, Total: 10, Elapsed: time.Second}); ok {
-		t.Error("should not estimate when the copy is done")
-	}
-	// 10 files in 10s => 1s each; 90 remain => ~90s.
-	eta, ok := estimateRemaining(flatten.Progress{Done: 10, Total: 100, Elapsed: 10 * time.Second})
-	if !ok || eta != 90*time.Second {
-		t.Errorf("eta = %v (ok=%v), want 90s", eta, ok)
-	}
-	// A sub-second remainder is noise: "~0s left" tells the user nothing.
-	if _, ok := estimateRemaining(flatten.Progress{Done: 11, Total: 12, Elapsed: 110 * time.Millisecond}); ok {
-		t.Error("should suppress an ETA under one second")
-	}
-}
-
-// TestRateMeterFollowsASlowdown is the point of the meter: a drive that throttles
-// mid-copy must show a falling rate, not a comfortable lifetime average.
-func TestRateMeterFollowsASlowdown(t *testing.T) {
-	m := &rateMeter{}
-
-	// Ten seconds at 100 MB/s.
-	fast, _ := m.observe(flatten.Progress{Done: 1, Bytes: 1_000_000_000, Elapsed: 10 * time.Second})
-	if fast < 90e6 || fast > 110e6 {
-		t.Fatalf("initial rate %.0f B/s, want ~100 MB/s", fast)
-	}
-
-	// Then ten seconds at 10 MB/s. The reported rate must fall well below the
-	// lifetime average, which is still ~55 MB/s.
-	var slow float64
-	for i := 0; i < 5; i++ {
-		bytes := int64(1_000_000_000 + (i+1)*100_000_000/5)
-		slow, _ = m.observe(flatten.Progress{
-			Done:    2 + i,
-			Bytes:   bytes,
-			Elapsed: time.Duration(10+2*(i+1)) * time.Second,
-		})
-	}
-	lifetime := float64(1_100_000_000) / 20.0 // ~55 MB/s
-	if slow >= lifetime {
-		t.Errorf("smoothed rate %.0f B/s did not drop below the lifetime average %.0f B/s "+
-			"— a throttling drive would look fine", slow, lifetime)
-	}
-	if slow > 40e6 {
-		t.Errorf("smoothed rate %.0f B/s is still too close to the fast phase", slow)
-	}
-}
-
-// TestRateMeterIgnoresBursts: many tiny files landing in the same instant must not
-// produce a nonsense instantaneous rate.
-func TestRateMeterIgnoresBursts(t *testing.T) {
-	m := &rateMeter{}
-	first, _ := m.observe(flatten.Progress{Done: 1, Bytes: 10_000_000, Elapsed: time.Second})
-
-	// A second sample 1ms later, below the resample interval.
-	got, _ := m.observe(flatten.Progress{Done: 2, Bytes: 10_000_100, Elapsed: time.Second + time.Millisecond})
-	if got != first {
-		t.Errorf("sub-interval sample changed the rate: %.0f -> %.0f", first, got)
-	}
-}
-
-// wide is a terminal with room for every part of the progress line.
-const wide = 200
-
-func TestProgressLineShowsThroughput(t *testing.T) {
-	p := flatten.Progress{Done: 105, Total: 250, Bytes: 1_900_000_000, Elapsed: 30 * time.Second}
-	line := progressLine(p, 58_300_000, 0, wide)
-
-	for _, want := range []string{"42%", "105/250", "1.9 GB", "58.3 MB/s", "left"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("progress line missing %q:\n%s", want, line)
-		}
-	}
-	// The bar must never overflow when a copy completes.
-	done := progressLine(flatten.Progress{Done: 7, Total: 7, Bytes: 100, Elapsed: time.Second}, 100, 0, wide)
-	if !strings.Contains(done, "100%") {
-		t.Errorf("completed line should read 100%%:\n%s", done)
-	}
-	if strings.Contains(done, "left") {
-		t.Errorf("completed line should not show an ETA:\n%s", done)
-	}
-}
-
-// TestRateMeterDetectsAStall is the fix for a copy that looked hung. A file that
-// blocks in read reports no new bytes; the meter must say how long it has been
-// still, so the display can say so instead of freezing silently.
-func TestRateMeterDetectsAStall(t *testing.T) {
-	m := &rateMeter{}
-	m.observe(flatten.Progress{Done: 1, Bytes: 5_000_000, Elapsed: 2 * time.Second})
-
-	// Progress keeps being reported — Copy announces each file — but no bytes move.
-	_, stalled := m.observe(flatten.Progress{Done: 1, Bytes: 5_000_000, Elapsed: 20 * time.Second})
-	if stalled != 18*time.Second {
-		t.Errorf("stalled = %v, want 18s measured from the last byte that moved", stalled)
-	}
-
-	// One byte lands: the stall clock resets.
-	_, stalled = m.observe(flatten.Progress{Done: 1, Bytes: 5_000_001, Elapsed: 21 * time.Second})
-	if stalled != 0 {
-		t.Errorf("stalled = %v after bytes moved, want 0", stalled)
-	}
-}
-
-// TestProgressLineNamesTheStuckFile: a frozen bar with no filename is what sent the
-// user to `lsof`. The name must be on screen, and a stall must be called out.
-func TestProgressLineNamesTheStuckFile(t *testing.T) {
-	p := flatten.Progress{Done: 1084, Total: 11041, Bytes: 1_200_000_000, Current: "DSC_4417.NEF", Elapsed: time.Minute}
-
-	running := progressLine(p, 38_000_000, 0, wide)
-	if !strings.Contains(running, "DSC_4417.NEF") {
-		t.Errorf("running line should name the file in flight:\n%s", running)
-	}
-	if !strings.Contains(running, "left") {
-		t.Errorf("running line should show an ETA:\n%s", running)
-	}
-
-	stuck := progressLine(p, 38_000_000, 47*time.Second, wide)
-	if !strings.Contains(stuck, "DSC_4417.NEF") {
-		t.Errorf("stalled line must still name the file:\n%s", stuck)
-	}
-	if !strings.Contains(stuck, "no data for 47s") {
-		t.Errorf("stalled line must say so, not silently freeze:\n%s", stuck)
-	}
-	if strings.Contains(stuck, "left") {
-		t.Errorf("a stalled copy has no meaningful ETA:\n%s", stuck)
-	}
-}
-
-func TestTruncateMiddle(t *testing.T) {
-	// Short names pass through.
-	if got := truncateMiddle("DSC_0001.NEF", 28); got != "DSC_0001.NEF" {
-		t.Errorf("short name changed: %q", got)
-	}
-	// Long names keep their extension, which is what identifies the file.
-	long := "a-very-long-photograph-filename-from-2019.NEF"
-	got := truncateMiddle(long, 20)
-	if len([]rune(got)) != 20 {
-		t.Errorf("truncateMiddle(%q, 20) = %q (%d runes), want 20", long, got, len([]rune(got)))
-	}
-	if !strings.HasSuffix(got, ".NEF") {
-		t.Errorf("extension lost: %q", got)
-	}
-	if !strings.Contains(got, "…") {
-		t.Errorf("no ellipsis: %q", got)
-	}
-}
-
-// TestProgressLineFitsTheTerminal is the fix for a copy that filled an 80-column
-// window with stale progress bars: a line wider than the terminal wraps, and the
-// carriage return redraws only the wrapped half.
-func TestProgressLineFitsTheTerminal(t *testing.T) {
-	p := flatten.Progress{
-		Done: 1084, Total: 11041, Bytes: 1_200_000_000, Elapsed: time.Minute,
-		Current: "IMG_2019_summer_vacation_with_family_at_the_lake_house_1084.jpg",
-	}
-	for _, width := range []int{20, 40, 59, 79, 99, 139} {
-		for _, stalled := range []time.Duration{0, 47 * time.Second} {
-			line := progressLine(p, 38_000_000, stalled, width)
-			if got := ansi.StringWidth(line); got > width {
-				t.Errorf("width %d, stalled %v: line is %d columns:\n%s", width, stalled, got, line)
-			}
-		}
-	}
-
-	// At the default 80 columns a healthy copy keeps its rate and ETA by shrinking
-	// the bar, rather than dropping the numbers.
-	line := progressLine(p, 38_000_000, 0, 79)
-	for _, want := range []string{"1084/11041", "MB/s", "left"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("80 columns: missing %q:\n%s", want, line)
-		}
-	}
-
-	// A stall keeps its warning and the stuck file's name to the last.
-	stuck := progressLine(p, 38_000_000, 47*time.Second, 59)
-	for _, want := range []string{"no data for 47s", "IMG_"} {
-		if !strings.Contains(stuck, want) {
-			t.Errorf("60 columns, stalled: missing %q:\n%s", want, stuck)
-		}
-	}
-}
-
-// TestScanStatusShowsALongReadMoving: the full read of a large video is where the
-// scan used to freeze on screen. Its byte count must be visible; a small file's
-// would only flicker.
-func TestScanStatusShowsALongReadMoving(t *testing.T) {
-	if got := scanStatus(dedup.Progress{Phase: dedup.Sizing, Done: 2048, Total: 11041}); got != "checking sizes  2048/11041" {
-		t.Errorf("sizing line = %q", got)
-	}
-	big := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 3, Total: 4, Current: "GX010042.MP4", Read: 1_200_000_000, Size: 4_000_000_000})
-	if !strings.Contains(big, "1.2 GB of 4.0 GB") || !strings.Contains(big, "GX010042.MP4") {
-		t.Errorf("large read should show its file and bytes: %q", big)
-	}
-	small := scanStatus(dedup.Progress{Phase: dedup.Hashing, Done: 1, Total: 4, Current: "a.jpg", Read: 4096, Size: 65536})
-	if strings.Contains(small, " of ") {
-		t.Errorf("a small read should not show a byte count: %q", small)
-	}
-}
 
 func TestCommandLine(t *testing.T) {
 	cases := []struct {
@@ -267,14 +16,18 @@ func TestCommandLine(t *testing.T) {
 		out, err string
 	}{
 		{[]string{"--help"}, 0, "Usage:", ""},
-		{[]string{"-h"}, 0, "Usage:", ""},
+		{[]string{"-h"}, 0, "copy flags:", ""},
 		{[]string{"--version"}, 0, "superdirectory ", ""},
 		{[]string{"--frobnicate"}, 2, "", "unknown argument"},
+		{[]string{"copy", "--to"}, 2, "", ""},
+		{[]string{"copy", "--from", "/nope", "--to", "/tmp/x", "--yes"}, 2, "", "source"},
+		{[]string{"resume"}, 2, "", "one argument"},
+		{[]string{"presets", "extra"}, 2, "", "presets takes"},
 	}
 	for _, c := range cases {
 		var out, errOut bytes.Buffer
 		if got := command(c.args, &out, &errOut); got != c.code {
-			t.Errorf("%v: exit %d, want %d", c.args, got, c.code)
+			t.Errorf("%v: exit %d, want %d (stderr %q)", c.args, got, c.code, errOut.String())
 		}
 		if !strings.Contains(out.String(), c.out) {
 			t.Errorf("%v: stdout %q, want it to contain %q", c.args, out.String(), c.out)
@@ -285,32 +38,54 @@ func TestCommandLine(t *testing.T) {
 	}
 }
 
-func TestScanStatusNamesEachPictureStage(t *testing.T) {
-	cases := map[dedup.Phase]string{
-		dedup.ReadingHeaders: "reading picture headers  40/120",
-		dedup.Fingerprinting: "fingerprinting 40/120  IMG_0042.jpg",
-		dedup.Confirming:     "confirming 40/120  IMG_0042.jpg",
+func TestParseCopyFlags(t *testing.T) {
+	var errOut bytes.Buffer
+	j, opt, err := parseCopy([]string{
+		"--from", "a", "--from", "b,with,commas",
+		"--to", "out", "--layout", "type", "--keep-folders",
+		"--skip", "*.tmp", "--only", "Documents,png", "--max-size", "200MB",
+		"--duplicates", "identical,pictures", "--batch", "50", "--yes",
+	}, &errOut)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for phase, want := range cases {
-		if got := scanStatus(dedup.Progress{Phase: phase, Done: 40, Total: 120, Current: "IMG_0042.jpg"}); got != want {
-			t.Errorf("phase %d: %q, want %q", phase, got, want)
-		}
+	if len(j.Sources) != 2 || !filepath.IsAbs(j.Sources[0]) || !strings.HasSuffix(j.Sources[1], "b,with,commas") {
+		t.Errorf("sources %v: each --from is one folder, kept whole", j.Sources)
+	}
+	if j.Layout != job.ByType || !j.KeepFolders || j.MaxSize != 200_000_000 || j.Batch != 50 || j.Retries != 1 {
+		t.Errorf("job %+v", j)
+	}
+	if strings.Join(j.Only, ",") != "Documents,png" || !j.Finds(job.Pictures) || j.Finds(job.Documents) {
+		t.Errorf("lists: only %v, duplicates %v", j.Only, j.Duplicates)
+	}
+	if !opt.yes {
+		t.Error("--yes")
+	}
+
+	j, _, _ = parseCopy([]string{"--from", "a", "--to", "b", "--duplicates", "all"}, &errOut)
+	if len(j.Duplicates) != 3 {
+		t.Errorf("--duplicates all = %v", j.Duplicates)
+	}
+	if _, _, err := parseCopy([]string{"--from", "a", "--to", "b", "--min-size", "huge"}, &errOut); err == nil {
+		t.Error("a bad size was accepted")
 	}
 }
 
-// TestSimilarExamplesShowSizes: the prompt to skip smaller copies has to show what
-// it would skip, at what size, and what it keeps instead.
-func TestSimilarExamplesShowSizes(t *testing.T) {
-	items := []flatten.Item{{Src: "/p/IMG_0042.jpg"}, {Src: "/p/web/IMG_0042-small.jpg"}, {Src: "/p/a.png"}, {Src: "/p/a-thumb.png"}}
-	res := dedup.SimilarResult{
-		Sets: []dedup.ImageSet{{Keep: 0, Skip: []int{1}}, {Keep: 2, Skip: []int{3}}},
-		Dims: map[int]dedup.Dims{0: {W: 4032, H: 3024}, 1: {W: 1600, H: 1200}, 2: {W: 800, H: 600}, 3: {W: 200, H: 150}},
+// TestPresetThenFlags: a preset supplies the job, and only the flags actually
+// given override it — an unset --batch must not reset the preset's batches to 0.
+func TestPresetThenFlags(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	if err := job.SavePreset("docs", job.Job{Sources: []string{"/src"}, Layout: job.ByType, Batch: 50, Retries: 2}); err != nil {
+		t.Fatal(err)
 	}
-	got := similarExamples(items, res, 1)
-	if !strings.Contains(got, "IMG_0042-small.jpg 1600×1200  →  IMG_0042.jpg 4032×3024") {
-		t.Errorf("example line missing or misformatted:\n%s", got)
+	var errOut bytes.Buffer
+	j, _, err := parseCopy([]string{"--preset", "docs", "--to", "/out", "--verify"}, &errOut)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(got, "… and 1 more") {
-		t.Errorf("should say how many sets are not shown:\n%s", got)
+	if j.Batch != 50 || j.Layout != job.ByType || j.Retries != 2 || !j.Verify || j.Target != "/out" || j.Sources[0] != "/src" {
+		t.Errorf("preset with overrides: %+v", j)
 	}
 }
