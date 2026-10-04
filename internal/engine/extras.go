@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -18,14 +19,71 @@ import (
 	"github.com/ozzyphantom/SuperDirectory/internal/guard"
 	"github.com/ozzyphantom/SuperDirectory/internal/job"
 	"github.com/ozzyphantom/SuperDirectory/internal/merge"
+	"github.com/ozzyphantom/SuperDirectory/internal/organize"
+	"github.com/ozzyphantom/SuperDirectory/internal/sniff"
 	"github.com/ozzyphantom/SuperDirectory/internal/textdup"
 	"github.com/ozzyphantom/SuperDirectory/internal/textual"
 )
 
-// The stages below are filled in as their format packages land: type detection,
-// titles, archive expansion, text merging, and near-duplicate documents.
+// unrenamed are detected types a file is never renamed to. Family names — ole,
+// elf, macho — are not extensions. A program or package is left as it is: a
+// misnamed one is usually misnamed on purpose, and renaming a file so that a
+// double-click runs it is not a tidy-up.
+var unrenamed = map[string]bool{
+	"ole": true, "elf": true, "macho": true,
+	"exe": true, "class": true, "wasm": true, "jar": true, "apk": true,
+}
 
-func (r *run) detectType(g guard.Reader, f *flatten.File) error { return nil }
+// serverPages are the extensions of pages a server runs. Text fits any name in
+// general, but HTML under one of these is a saved page — a scrape's
+// "report.php" — and reads as a web page only when named one. A page with the
+// server's code still in it is source, and keeps its name.
+var serverPages = map[string]bool{
+	"php": true, "php3": true, "php4": true, "php5": true, "phtml": true,
+	"asp": true, "aspx": true, "jsp": true, "jspx": true, "cfm": true,
+	"cgi": true, "do": true, "action": true,
+}
+
+// serverCode reports whether a page's start holds code a server would have run.
+func serverCode(head []byte) bool {
+	h := bytes.ToLower(head)
+	return bytes.Contains(h, []byte("<?php")) || bytes.Contains(h, []byte("<?=")) || bytes.Contains(h, []byte("<%"))
+}
+
+// detectType reads the start of a file and, when its content disagrees with its
+// name — a page saved as "report.php", a HEIC photo named ".jpg", a PDF with no
+// extension at all — renames it to the extension its content shows, for the
+// layout and for the program that opens it. The report keeps the old name.
+func (r *run) detectType(g guard.Reader, f *flatten.File) error {
+	var code bool
+	detected, err := guard.Read(g, f.Path, func(fh exif.File) (string, error) {
+		head := make([]byte, min(f.Size, sniff.HeadSize))
+		n, _ := fh.ReadAt(head, 0)
+		code = serverCode(head[:n])
+		return sniff.DetectFile(fh, f.Size)
+	})
+	if err != nil {
+		return err
+	}
+	name := f.BaseName()
+	ext := organize.Extension(name)
+	saved := detected == "html" && serverPages[ext] && !code
+	if detected == "" || unrenamed[detected] || (sniff.Agrees(ext, detected) && !saved) {
+		return nil
+	}
+	stem := name
+	note := fmt.Sprintf("type: the content is %s; it had no extension", detected)
+	if ext != "" {
+		if n := len(name) - len(ext); n > 1 && strings.EqualFold(name[n:], ext) {
+			stem = name[:n-1]
+		}
+		note = fmt.Sprintf("type: the content is %s, not .%s", detected, ext)
+	}
+	f.Name, f.Ext = stem+"."+detected, detected
+	r.notes[f.Path] = note
+	r.sum.Retyped++
+	return nil
+}
 
 func (r *run) readTitle(g guard.Reader, f *flatten.File) error { return nil }
 

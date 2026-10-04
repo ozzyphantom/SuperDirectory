@@ -527,3 +527,36 @@ func TestNewerKeepsTheLaterThenTheLargerDocument(t *testing.T) {
 		t.Error("on one date and size, the shorter path should be kept")
 	}
 }
+
+func TestDetectTypesRenamesMisnamedFiles(t *testing.T) {
+	usePrivateConfig(t)
+	png := "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+	src := tree(t, map[string]string{
+		"scrape/report.php": "<!DOCTYPE html><html><head><title>Q3</title></head><body><p>Numbers.</p></body></html>",
+		"scrape/manual":     "%PDF-1.4\n%âãÏÓ\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n",
+		"photos/IMG_1.JPG":  png,
+		"photos/IMG_2.png":  png,
+		"notes/README":      "plain words, no extension",
+		"tools/setup.dat":   "MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00",
+		"site/index.php":    "<?php require 'head.php'; ?>\n<!DOCTYPE html><html><body><?= $body ?></body></html>",
+	})
+	target := filepath.Join(filepath.Dir(src), "Out")
+	sum, err := Run(job.Job{Sources: []string{src}, Target: target, Layout: job.ByDepth, Depth: 1, DetectTypes: true}, &fakeHooks{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(listTarget(t, target), ",")
+	want := "notes/README,photos/IMG_1.png,photos/IMG_2.png,scrape/manual.pdf,scrape/report.html,site/index.php,tools/setup.dat"
+	if got != want {
+		t.Errorf("target holds %s\nwant %s", got, want)
+	}
+	if sum.Retyped != 3 {
+		t.Errorf("retyped %d files, want 3", sum.Retyped)
+	}
+	csv, _ := os.ReadFile(filepath.Join(target, StateDirName, "report.csv"))
+	for _, s := range []string{"type: the content is png, not .jpg", "type: the content is pdf; it had no extension", "type: the content is html, not .php"} {
+		if !strings.Contains(string(csv), s) {
+			t.Errorf("report.csv lacks %q:\n%s", s, csv)
+		}
+	}
+}
