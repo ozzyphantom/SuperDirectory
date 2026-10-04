@@ -722,3 +722,28 @@ func TestExecuteStopsWhenTheDestinationIsFull(t *testing.T) {
 		t.Error("a file after the full disk was copied")
 	}
 }
+
+func TestPauserTotalsItsPauses(t *testing.T) {
+	var p Pauser
+	p.Toggle()
+	time.Sleep(20 * time.Millisecond)
+	if p.Total() < 20*time.Millisecond {
+		t.Errorf("a pause in progress counts %v", p.Total())
+	}
+	p.Toggle()
+	first := p.Total()
+	time.Sleep(10 * time.Millisecond)
+	if p.Total() != first {
+		t.Error("time running counted as paused")
+	}
+	p.Toggle()
+	time.Sleep(10 * time.Millisecond)
+	p.Toggle()
+	if p.Total() < first+10*time.Millisecond {
+		t.Errorf("a second pause was not added: %v", p.Total())
+	}
+	var none *Pauser
+	if none.Total() != 0 {
+		t.Error("a nil Pauser was paused")
+	}
+}

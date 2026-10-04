@@ -306,3 +306,19 @@ func TestCopyScreenKeepsTheDestinationName(t *testing.T) {
 		t.Errorf("a copy that wrote no bytes showed a rate:\n%s", v)
 	}
 }
+
+// TestSummaryRateLeavesOutPauses: the average is over the time the copy worked,
+// and a pause is said, not folded into a slower rate.
+func TestSummaryRateLeavesOutPauses(t *testing.T) {
+	var b bytes.Buffer
+	PrintSummary(&b, engine.Summary{
+		Job: job.Job{Target: "/t"}, Planned: 2, Elapsed: 26 * time.Second,
+		Result: flatten.Result{Copied: 2, Bytes: 8_000_000_000, Elapsed: 18 * time.Second, Paused: 7 * time.Second},
+	})
+	out := ansi.Strip(b.String())
+	for _, want := range []string{"8.0 GB in 26s", "444.4 MB/s average", "paused 7s"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q:\n%s", want, out)
+		}
+	}
+}

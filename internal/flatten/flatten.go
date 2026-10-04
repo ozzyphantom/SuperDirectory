@@ -279,6 +279,10 @@ type Result struct {
 	Bytes                    int64 // bytes written, including discarded partial files
 	ClonedBytes              int64 // size of the files cloned, which wrote no data
 
+	// Elapsed is how long the copy worked, pauses excluded; Paused is how long it
+	// was paused. A rate is Bytes over Elapsed.
+	Elapsed, Paused time.Duration
+
 	// Full says the destination filled up. The copy stopped at the file that did
 	// not fit: every file after it would fail the same way, slowly, on a slow drive.
 	// The rest are NotReached, for a resume once there is room.
@@ -338,11 +342,15 @@ func Copy(target string, items []Item, opts Options) []Failure {
 // Items whose Dst names a nested path get their parent directories created on
 // demand. The set of already-created directories is cached, so a plan with
 // thousands of files in one type folder costs one mkdir, not thousands.
-func Execute(target string, items []Item, opts Options) Result {
-	res := Result{Outcomes: make([]Outcome, len(items))}
+func Execute(target string, items []Item, opts Options) (res Result) {
+	res = Result{Outcomes: make([]Outcome, len(items))}
 	total := len(items)
 	made := map[string]bool{target: true}
 	start := time.Now()
+	defer func() {
+		res.Paused = opts.Pause.Total()
+		res.Elapsed = time.Since(start) - res.Paused
+	}()
 
 	var base int64   // bytes from completed files
 	var cur *copyJob // the file in flight, if any
@@ -778,6 +786,7 @@ type Pauser struct {
 	mu    sync.Mutex
 	gate  chan struct{} // non-nil while paused; closed to release waiters
 	since time.Time
+	total time.Duration // pauses that have ended
 }
 
 // Toggle pauses a running copy or resumes a paused one, and reports the new state.
@@ -790,7 +799,22 @@ func (p *Pauser) Toggle() (paused bool) {
 	}
 	close(p.gate)
 	p.gate = nil
+	p.total += time.Since(p.since)
 	return false
+}
+
+// Total is how long the copy has been paused, the current pause included.
+func (p *Pauser) Total() time.Duration {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t := p.total
+	if p.gate != nil {
+		t += time.Since(p.since)
+	}
+	return t
 }
 
 // Paused reports whether the copy is paused, and since when.

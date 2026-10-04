@@ -496,6 +496,9 @@ func mergeResults(items []flatten.Item, res, again flatten.Result, idx []int) fl
 		Outcomes:    append([]flatten.Outcome(nil), res.Outcomes...),
 		Bytes:       res.Bytes + again.Bytes,
 		ClonedBytes: res.ClonedBytes + again.ClonedBytes,
+		Elapsed:     res.Elapsed + again.Elapsed,
+		Paused:      res.Paused + again.Paused,
+		Full:        again.Full,
 	}
 	retried := map[string]bool{}
 	for k, i := range idx {

@@ -198,9 +198,19 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 		fmt.Fprintln(w, "  "+dim.Render("No files to copy."))
 		return
 	}
+	// The rate is over the time the copy worked: measuring, scanning and pauses
+	// are not the drive's doing.
 	rate := 0.0
-	if secs := s.Elapsed.Seconds(); secs > 0 {
+	working := r.Elapsed
+	if working <= 0 {
+		working = s.Elapsed
+	}
+	if secs := working.Seconds(); secs > 0 {
 		rate = float64(r.Bytes) / secs
+	}
+	paused := ""
+	if r.Paused >= time.Second {
+		paused = "  ·  " + dim.Render("paused "+humanDuration(r.Paused))
 	}
 	switch {
 	case r.Bytes == 0 && r.ClonedBytes > 0:
@@ -210,11 +220,11 @@ func PrintSummary(w io.Writer, s engine.Summary) {
 		if r.Cloned > 0 {
 			note = "cloned on the same volume, no data copied"
 		}
-		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s\n", green.Render(bold.Render("Finished!")),
-			bold.Render(HumanBytes(r.ClonedBytes)), humanDuration(s.Elapsed), dim.Render(note))
+		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s%s\n", green.Render(bold.Render("Finished!")),
+			bold.Render(HumanBytes(r.ClonedBytes)), humanDuration(s.Elapsed), dim.Render(note), paused)
 	default:
-		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s average\n", green.Render(bold.Render("Finished!")),
-			bold.Render(HumanBytes(r.Bytes+r.ClonedBytes)), humanDuration(s.Elapsed), bold.Render(humanRate(rate)))
+		fmt.Fprintf(w, "\n  %s  %s in %s  ·  %s average%s\n", green.Render(bold.Render("Finished!")),
+			bold.Render(HumanBytes(r.Bytes+r.ClonedBytes)), humanDuration(s.Elapsed), bold.Render(humanRate(rate)), paused)
 	}
 
 	var parts []string
