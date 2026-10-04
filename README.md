@@ -531,6 +531,7 @@ SuperDirectory/
 | `internal/extract` | What `inspect` shows: type, title and capture date, behind the extractor seam the [roadmap](roadmap.md) describes |
 | `internal/merge` | Packs documents into Markdown files under a word and byte limit |
 | `internal/expand` | Unpacks zip and tar archives, with limits |
+| `internal/chm` | Reads compiled help (`.chm`) files, LZX included |
 | `internal/review` | The duplicate review screen |
 | `internal/notify` | Desktop notifications |
 | `internal/ui` | The copy screen, status lines, prompts, and the plain output of `copy` |
