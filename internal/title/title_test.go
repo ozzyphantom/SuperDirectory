@@ -213,3 +213,43 @@ func TestShorten(t *testing.T) {
 		}
 	}
 }
+
+func TestFileNameTitlesBecomePlainTitles(t *testing.T) {
+	cases := map[string]string{
+		"Microsoft Word - VLAN guide.docx":         "VLAN guide",
+		"Microsoft PowerPoint - Q3 Review.pptx":    "Q3 Review",
+		`C:\Users\bob\Desktop\Wiring Diagram.doc`:  "Wiring Diagram",
+		"/Users/bob/Documents/Install Notes.pages": "Install Notes",
+		"report.PDF":                 "report",
+		"TCP/IP Basics":              "TCP/IP Basics",
+		"Node.js Guide":              "Node.js Guide",
+		"Release 2.0":                "Release 2.0",
+		"Microsoft Word - Document1": "",
+		"untitled.pdf":               "",
+	}
+	for in, want := range cases {
+		if got := clean(in); got != want {
+			t.Errorf("clean(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestMetadataTitlesThatAreFileNames(t *testing.T) {
+	old := PDF
+	t.Cleanup(func() { PDF = old })
+	for title, want := range map[string]string{
+		"DMTB_View-Diagram":         "",
+		"Setup_Guide.docx":          "",
+		"Quick start_guide":         "Quick start_guide",
+		"Code Review of the Go TUF": "Code Review of the Go TUF",
+	} {
+		PDF = func(io.ReaderAt, int64) string { return title }
+		if got := Of("x.pdf", strings.NewReader("%PDF"), 4); got != want {
+			t.Errorf("PDF titled %q: got %q, want %q", title, got, want)
+		}
+	}
+	md := "# my_module_name\n"
+	if got := Of("README.md", strings.NewReader(md), int64(len(md))); got != "my_module_name" {
+		t.Errorf("a Markdown heading was judged as metadata: %q", got)
+	}
+}

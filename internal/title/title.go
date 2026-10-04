@@ -58,7 +58,27 @@ func Of(name string, r io.ReaderAt, size int64) (title string) {
 			title = ""
 		}
 	}()
-	return clean(read(r, size))
+	t := clean(read(r, size))
+	if fromMetadata[extension(name)] && fileLike(t) {
+		return ""
+	}
+	return t
+}
+
+// fromMetadata are the formats whose title is a field the authoring tool fills
+// in, often with the file's own name, rather than words the author put on the
+// page.
+var fromMetadata = map[string]bool{
+	"pdf": true, "docx": true, "docm": true, "xlsx": true, "xlsm": true,
+	"pptx": true, "pptm": true, "odt": true, "ods": true, "odp": true, "odg": true,
+}
+
+// fileLike reports whether a metadata title reads as a file name a tool kept:
+// words joined by underscores, with no space, as in "DMTB_View-Diagram". A
+// heading the author wrote that way, such as a module's name in its README, is
+// still a title; only metadata fields are judged by this.
+func fileLike(t string) bool {
+	return strings.ContainsRune(t, '_') && !strings.ContainsRune(t, ' ')
 }
 
 // Supported reports whether Of can read name's format.
@@ -126,11 +146,64 @@ func dropPartialRune(b []byte) []byte {
 // clean is the last step for every title: normalize it, and drop it when it
 // names nothing.
 func clean(s string) string {
-	s = normalize(s)
+	s = fileTitle(normalize(s))
 	if generic(s) {
 		return ""
 	}
 	return s
+}
+
+// printedPrefixes are what Office writes before a file's name when it prints a
+// document to PDF and nobody set a title: "Microsoft Word - report.docx".
+var printedPrefixes = []string{
+	"microsoft word - ", "microsoft powerpoint - ", "microsoft excel - ", "microsoft visio - ",
+}
+
+// docExts are the extensions a title made from a file name ends in.
+var docExts = map[string]bool{
+	".doc": true, ".docx": true, ".dot": true, ".dotx": true, ".rtf": true, ".odt": true,
+	".ppt": true, ".pptx": true, ".odp": true, ".key": true,
+	".xls": true, ".xlsx": true, ".ods": true, ".numbers": true,
+	".pdf": true, ".pages": true, ".txt": true, ".md": true,
+	".htm": true, ".html": true, ".vsd": true, ".vsdx": true, ".ps": true, ".tex": true,
+}
+
+// fileTitle turns a title that is only a file's name or path — what many tools
+// store when nobody named the document — into the file's name without its
+// extension: "Microsoft Word - VLAN guide.docx" and "C:\Docs\VLAN guide.doc"
+// both become "VLAN guide". Only a name that ends in a document's extension
+// counts, and only a path that starts like one: "TCP/IP Basics" and "C:\Path"
+// are titles.
+func fileTitle(s string) string {
+	lower := strings.ToLower(s)
+	for _, p := range printedPrefixes {
+		if strings.HasPrefix(lower, p) {
+			s = s[len(p):]
+			break
+		}
+	}
+	i := strings.LastIndexByte(s, '.')
+	if i <= 0 || !docExts[strings.ToLower(s[i:])] {
+		return s // not a document's file name
+	}
+	s = s[:i]
+	if pathLike(s) {
+		s = s[strings.LastIndexAny(s, `/\`)+1:]
+	}
+	return strings.TrimSpace(s)
+}
+
+// pathLike reports whether s starts as an absolute path does: "/", "~/", "\\",
+// or a drive letter.
+func pathLike(s string) bool {
+	switch {
+	case strings.HasPrefix(s, "/"), strings.HasPrefix(s, "~/"), strings.HasPrefix(s, `\\`):
+		return true
+	case len(s) > 2 && s[1] == ':' && (s[2] == '\\' || s[2] == '/'):
+		c := s[0] | 0x20
+		return c >= 'a' && c <= 'z'
+	}
+	return false
 }
 
 // normalize trims a title, turns each run of whitespace and control characters
@@ -198,6 +271,7 @@ func generic(s string) bool {
 	if placeholders[s] {
 		return true
 	}
+
 	// "Untitled presentation", "Untitled spreadsheet": Google's defaults, and
 	// their kin from other tools.
 	f := strings.Fields(s)

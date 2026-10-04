@@ -532,6 +532,7 @@ SuperDirectory/
 | `internal/merge` | Packs documents into Markdown files under a word and byte limit |
 | `internal/expand` | Unpacks zip and tar archives, with limits |
 | `internal/chm` | Reads compiled help (`.chm`) files, LZX included |
+| `internal/pdf` | A PDF's title and text: xref repair, filters, fonts and encodings, the encryption a blank password opens |
 | `internal/review` | The duplicate review screen |
 | `internal/notify` | Desktop notifications |
 | `internal/ui` | The copy screen, status lines, prompts, and the plain output of `copy` |
