@@ -11,6 +11,7 @@ package expand
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
 	"errors"
@@ -246,7 +247,7 @@ func (u *unpacker) chm(r io.ReaderAt, size int64) error {
 			u.skipped++
 			continue
 		}
-		if err := u.write(name, time.Time{}, strings.NewReader(string(data))); err != nil {
+		if err := u.write(name, time.Time{}, bytes.NewReader(data)); err != nil {
 			return err
 		}
 	}

@@ -671,3 +671,33 @@ func TestRenameTitlesCollideIntoSuffixes(t *testing.T) {
 		t.Errorf("target holds %s", got)
 	}
 }
+
+func TestMergedArchivePagesNameTheArchive(t *testing.T) {
+	usePrivateConfig(t)
+	src := tree(t, map[string]string{"Guides/intro.txt": "Read this first."})
+	zf, _ := os.Create(filepath.Join(src, "Guides", "Manual.zip"))
+	zw := zip.NewWriter(zf)
+	for name, body := range map[string]string{"docs/setup.htm": "<title>Setup</title><p>Plug it in.</p>", "docs/faq.htm": "<p>Ask.</p>"} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	zf.Close()
+
+	target := filepath.Join(filepath.Dir(src), "Out")
+	if _, err := Run(job.Job{Sources: []string{src}, Target: target, Expand: true, MergeText: true}, &fakeHooks{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(target, "Out 001.md"))
+	if err != nil {
+		t.Fatalf("%v; target holds %s", err, strings.Join(listTarget(t, target), ","))
+	}
+	for _, s := range []string{"## Guides/Manual.zip!/docs/setup.htm", "## Guides/Manual.zip!/docs/faq.htm", "## Guides/intro.txt"} {
+		if !strings.Contains(string(body), s) {
+			t.Errorf("merged file lacks %q:\n%s", s, body)
+		}
+	}
+	if strings.Contains(string(body), src) {
+		t.Errorf("a heading names the absolute source path:\n%s", body)
+	}
+}

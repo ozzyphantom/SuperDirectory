@@ -132,7 +132,8 @@ type run struct {
 	start time.Time
 
 	notes  map[string]string // what happened to a planned file, by source path, for the report
-	origin map[string]string // where a staged file came from, for the report: "manual.zip!/a.htm"
+	origin map[string]string // where a staged file came from, for the report: "/src/manual.zip!/a.htm"
+	within map[string]string // the same, relative to its source, for merged headings: "manual.zip!/a.htm"
 	gone   []row             // files that left the plan: expanded archives, skipped duplicates, merged documents
 	sum    Summary
 }
@@ -141,7 +142,7 @@ type run struct {
 // when the run could not start or did not finish: ErrStopped when stopped,
 // ErrAbandoned when the front end declined at a prompt.
 func Run(j job.Job, h Hooks, stop <-chan struct{}) (Summary, error) {
-	r := &run{j: j, h: h, stop: stop, start: time.Now(), notes: map[string]string{}, origin: map[string]string{}}
+	r := &run{j: j, h: h, stop: stop, start: time.Now(), notes: map[string]string{}, origin: map[string]string{}, within: map[string]string{}}
 	r.sum.Job = j
 	if err := j.Validate(); err != nil {
 		return r.sum, err

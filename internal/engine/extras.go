@@ -177,6 +177,7 @@ func (r *run) expand(files []flatten.File, rules filter.Rules) ([]flatten.File, 
 				continue
 			}
 			r.origin[nf.Path] = f.Path + "!/" + filepath.ToSlash(e.Rel)
+			r.within[nf.Path] = filepath.ToSlash(f.Rel) + "!/" + filepath.ToSlash(e.Rel)
 			kept = append(kept, nf)
 		}
 		inner[i] = kept
@@ -293,8 +294,8 @@ func (r *run) mergeText(items []flatten.Item) ([]flatten.Item, error) {
 				r.notes[it.Src] = "not merged: " + reason
 				continue
 			}
-			origin := it.Rel
-			if o, ok := r.origin[it.Src]; ok {
+			origin := filepath.ToSlash(it.Rel)
+			if o, ok := r.within[it.Src]; ok {
 				origin = o
 			}
 			file, err := w.Add(origin, text)
