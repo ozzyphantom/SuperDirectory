@@ -34,7 +34,7 @@ const wizard = [
   ['Filters', 'Copy everything, or set the types to include or exclude, a size range, a modified-date range, and name patterns to skip.'],
   ['Duplicates', 'Choose any of: identical files, smaller copies of pictures, near-duplicate documents. Add “review sets one by one before skipping” to decide set by set.'],
   ['Documents', 'Choose any of: rename documents to their titles, detect types by content, expand .zip, .tar and .chm files, merge text into large files, split into batches of N files.'],
-  ['Options', 'Verify copies, save a report (on by default), notify when done.'],
+  ['Options', 'Save a report (on by default), retry failed files once at the end (on by default), verify copies, notify when done.'],
   ['Confirm', 'Copy, Save as preset, Go back, or Cancel.'],
 ];
 
@@ -43,7 +43,7 @@ const commands = [
   ['cmd-wizard', 'superdirectory', 'start the wizard'],
   ['cmd-copy', 'superdirectory copy [flags]', 'copy without the wizard'],
   ['cmd-resume', 'superdirectory resume TARGET', 'finish an interrupted copy into TARGET'],
-  ['cmd-presets', 'superdirectory presets', 'list saved presets'],
+  ['cmd-presets', 'superdirectory presets', 'list saved presets; <code>presets delete NAME</code> removes one'],
   ['cmd-categories', 'superdirectory categories', 'print the type categories; <code>--write</code> saves them for editing'],
   ['cmd-inspect', 'superdirectory inspect DIR', 'show each file’s detected type and title'],
   ['cmd-help', 'superdirectory --help | --version', 'list the commands, or print the version'],
@@ -193,6 +193,27 @@ const values = [
         <p class="small"><Key k="j" /> <Key k="k" /> <Key k="h" /> <Key k="l" /> also move in the exclusion tree.</p>
 
         <table class="keytable">
+          <caption>Checklists</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="space" /></td><td>Select or clear the highlighted item.</td></tr>
+          </tbody>
+        </table>
+        <table class="keytable">
+          <caption>Duplicate review</caption>
+          <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+          <tbody>
+            <tr><td><Key k="left" /> <Key k="right" /></td><td>Go to the previous or next set.</td></tr>
+            <tr><td><Key k="up" /> <Key k="down" /></td><td>Move to a file in the set.</td></tr>
+            <tr><td><Key k="enter" /></td><td>Copy the highlighted file, and skip the others in the set.</td></tr>
+            <tr><td><Key k="a" /></td><td>Copy every file in the set. Press again to copy one.</td></tr>
+            <tr><td><Key k="n" /></td><td>Go to the next set that still skips a file.</td></tr>
+            <tr><td><Key k="d" /></td><td>Done: copy as chosen.</td></tr>
+            <tr><td><Key k="esc" /></td><td>Go back to the duplicates menu. Nothing is skipped yet.</td></tr>
+          </tbody>
+        </table>
+        <p class="small"><Key k="h" /> <Key k="j" /> <Key k="k" /> <Key k="l" /> also move in the review.</p>
+        <table class="keytable">
           <caption>During a scan or a copy</caption>
           <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
           <tbody>
@@ -204,7 +225,7 @@ const values = [
           <caption>During a copy</caption>
           <thead class="vh"><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
           <tbody>
-            <tr><td><Key k="p" /></td><td>Pause the copy. Press <Key k="p" /> again to continue.</td></tr>
+            <tr><td><Key k="p" /></td><td>Pause the copy. Press <Key k="p" /> again to continue. In the wizard only.</td></tr>
           </tbody>
         </table>
       </section>
@@ -371,7 +392,15 @@ const values = [
           </div>
           <div>
             <dt>Kept</dt>
-            <dd>The newest.</dd>
+            <dd>The newest. On the same date, the larger file.</dd>
+          </div>
+          <div>
+            <dt>Never compared</dt>
+            <dd>Documents under 200 words.</dd>
+          </div>
+          <div>
+            <dt>Formats</dt>
+            <dd>Plain text, Markdown, HTML, RTF, Word, ODT, EPUB, and PDF.</dd>
           </div>
         </dl>
       </section>
@@ -396,18 +425,18 @@ const values = [
           </thead>
           <tbody>
             <tr><th scope="row"><code>--batch 50</code></th><td>Folders of at most 50 files: one folder for each notebook.</td></tr>
-            <tr><th scope="row"><code>--merge-text</code></th><td>Merged text files of at most 400,000 words or 150 MB: each file fits in one source.</td></tr>
+            <tr><th scope="row"><code>--merge-text</code></th><td>The text documents of each folder, merged into Markdown files of at most 400,000 words or 150 MB: each file fits in one source. PDFs are not merged.</td></tr>
           </tbody>
         </table>
 
         <h3 id="notebooklm-steps">Prepare a folder for NotebookLM</h3>
         <ol class="proc">
-          <li>Run this command. Replace DIR with the source folder and TARGET with a new folder name.<pre><code>superdirectory copy --from DIR --to TARGET --rename-titles --merge-text --batch 50</code></pre></li>
+          <li>Run this command. Replace DIR with the source folder and TARGET with a new folder name.<pre><code>superdirectory copy --from DIR --to TARGET --duplicates documents --rename-titles --merge-text --batch 50</code></pre></li>
           <li>Open <ExternalLink href="https://notebooklm.google.com/">NotebookLM</ExternalLink>.</li>
           <li>Make one notebook for each batch folder in TARGET.</li>
           <li>Add the files of each batch folder to its notebook as sources.</li>
         </ol>
-        <p>In the wizard, choose “merge text into large files” and “split into batches of N files” at the Documents step. Set N to 50.</p>
+        <p>In the wizard, at the Documents step, select “Merge text documents into large files” and “Split the result into batch folders”. Then choose “50 — NotebookLM’s free plan”.</p>
       </section>
 
       {/* ---- Resume */}
@@ -432,15 +461,15 @@ const values = [
       {/* ---- Copy report */}
       <section aria-labelledby="report">
         <h2 id="report">Copy report</h2>
-        <p>Each copy writes a report into the hidden folder <code>.superdirectory/</code> inside the target. To turn it off, use <a href="#flag-no-report"><code>--no-report</code></a>, or clear “save a report” at the wizard’s Options step.</p>
+        <p>Each copy writes a report into the hidden folder <code>.superdirectory/</code> inside the target. To turn it off, use <a href="#flag-no-report"><code>--no-report</code></a>, or clear “Save a report” at the wizard’s Options step. Without a report, a copy that finishes removes the folder.</p>
         <dl class="spec spec--narrow">
           <div id="report-job">
             <dt><code>job.json</code></dt>
-            <dd>The run’s settings. Resume reads this file.</dd>
+            <dd>The run’s settings, and whether it finished. Resume reads this file. It is written with or without a report, so a stopped copy can resume.</dd>
           </div>
           <div id="report-csv">
             <dt><code>report.csv</code></dt>
-            <dd>One row for each file. Columns: source, destination, size, status, reason. Status is one of: copied, already there, skipped as duplicate, merged, failed.</dd>
+            <dd>One row for each file. Columns: status, source, destination, bytes, note. Status is one of: copied, cloned, already there, expanded, skipped, merged, failed, not reached.</dd>
           </div>
           <div id="report-md">
             <dt><code>report.md</code></dt>

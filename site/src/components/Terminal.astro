@@ -12,21 +12,25 @@
    The highlighted line is the program's selected menu item, in the program's
    own cyan (tokens.css, --signal). */
 const lines = [
-  '  Found 5 identical file(s) and 40 smaller copies of pictures, 7.3 MB',
+  '┃ Found 5 identical file(s) and 40 smaller copies of pictures, 7.3 MB',
+  '┃ Identical: the same contents, whatever the name. One of each set is',
+  '┃ copied: the name that is not a copy, nearest the top of the source.',
+  '┃',
+  '┃ Smaller copies: the same picture at a lower resolution. The largest',
+  '┃ is copied. For example:',
+  '┃   DSC_0001.png 480×320  →  DSC_0001.JPG 2400×1600',
+  '┃   DSC_0012-web.jpg 1200×800  →  DSC_0012.JPG 2400×1600',
+  '┃   DSC_0024-web.jpg 1200×800  →  DSC_0024.JPG 2400×1600',
+  '┃   … and 37 more',
+  '┃ > Skip them all',
+  '┃   Choose which kinds to skip…',
+  '┃   Review them one by one…',
+  '┃   Copy everything',
+  '┃   Cancel',
   '',
-  '  Smaller copies: the same picture at a lower resolution. The largest',
-  '  is copied. For example:',
-  '    DSC_0001.png 480×320  →  DSC_0001.JPG 2400×1600',
-  '    DSC_0012-web.jpg 1200×800  →  DSC_0012.JPG 2400×1600',
-  '    DSC_0024-web.jpg 1200×800  →  DSC_0024.JPG 2400×1600',
-  '    … and 37 more',
-  '',
-  '  > Skip both — identical files and smaller copies',
-  '    Skip identical files only',
-  '    Copy everything',
-  '    Cancel',
+  '  ↑↓ move   enter select   ctrl+c quit',
 ];
-const SELECTED = 9;
+const SELECTED = 10;
 ---
 
 <figure class="screen">

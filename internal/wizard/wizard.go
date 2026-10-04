@@ -28,10 +28,12 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/engine"
 	"github.com/ozzyphantom/SuperDirectory/internal/exclude"
 	"github.com/ozzyphantom/SuperDirectory/internal/fsmeta"
+	"github.com/ozzyphantom/SuperDirectory/internal/hint"
 	"github.com/ozzyphantom/SuperDirectory/internal/job"
 	"github.com/ozzyphantom/SuperDirectory/internal/organize"
 	"github.com/ozzyphantom/SuperDirectory/internal/pick"
@@ -667,7 +669,8 @@ func (w *flow) options() (step, error) {
 func (w *flow) confirm() (step, error) {
 	for {
 		choice := "copy"
-		desc := Summary(w.j)
+		// The form's border and padding take four columns of the terminal.
+		desc := summary(w.j, termWidth()-4)
 		if w.note != "" {
 			desc = w.note + "\n\n" + desc
 			w.note = ""
@@ -714,15 +717,26 @@ func (w *flow) confirm() (step, error) {
 }
 
 // Summary describes a job in a few lines, for the confirm screen.
-func Summary(j job.Job) string {
+func Summary(j job.Job) string { return summary(j, 0) }
+
+// summary is Summary with its paths fitted to width columns, cut from the left so
+// the folder names that tell one run from another stay. A width of zero or less
+// keeps them whole.
+func summary(j job.Job, width int) string {
 	var b strings.Builder
 	line := func(label, value string) { fmt.Fprintf(&b, "%-11s %s\n", label+":", value) }
-	from := j.Sources[0]
-	if len(j.Sources) > 1 {
-		from += fmt.Sprintf(" and %d more", len(j.Sources)-1)
+	path := func(p, more string) string {
+		if width <= 0 {
+			return p + more
+		}
+		return hint.FitPath(p, width-12-len(more)) + more
 	}
-	line("From", from)
-	line("To", j.Target)
+	more := ""
+	if len(j.Sources) > 1 {
+		more = fmt.Sprintf(" and %d more", len(j.Sources)-1)
+	}
+	line("From", path(j.Sources[0], more))
+	line("To", path(j.Target, ""))
 	switch j.LayoutOrFlat() {
 	case job.ByType:
 		if j.KeepFolders {
@@ -1046,4 +1060,13 @@ func within(child, parent string) bool {
 	}
 	// rel escapes parent only if it is "..", or starts with "../".
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// termWidth is the terminal's width in columns, or 0 when it is unknown.
+func termWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil {
+		return 0
+	}
+	return w
 }
