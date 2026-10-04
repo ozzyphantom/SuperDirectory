@@ -199,7 +199,9 @@ func progressLine(f frame, width int) string {
 		if l.bytes {
 			line += "  " + dim.Render(HumanBytes(p.Bytes+p.ExistingBytes+p.ClonedBytes))
 		}
-		if l.rate {
+		// A copy that ends having cloned or moved everything wrote no bytes; a rate
+		// of nothing would read as a stall.
+		if l.rate && !(p.Done >= p.Total && p.Bytes == 0) {
 			if f.paused > 0 {
 				line += "  " + bold.Render(humanRate(0))
 			} else {

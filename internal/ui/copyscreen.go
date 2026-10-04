@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ozzyphantom/SuperDirectory/internal/engine"
 	"github.com/ozzyphantom/SuperDirectory/internal/flatten"
@@ -134,7 +135,9 @@ func (m *copyScreen) View() string {
 	if w < 20 {
 		w = 20
 	}
-	head := fmt.Sprintf("  Copying %s (%s) into %s", count(m.run.Files, "file"), HumanBytes(m.run.Bytes), m.run.Target)
+	// The destination is cut from the left, so its own name stays in view.
+	head := fmt.Sprintf("  Copying %s (%s) into ", count(m.run.Files, "file"), HumanBytes(m.run.Bytes))
+	head += hint.FitPath(m.run.Target, w-ansi.StringWidth(head))
 	if m.run.Retry > 0 {
 		head = fmt.Sprintf("  Retrying %s, attempt %d", count(m.run.Files, "failed file"), m.run.Retry)
 	}

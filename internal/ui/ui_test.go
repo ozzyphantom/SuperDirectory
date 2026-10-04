@@ -288,3 +288,21 @@ func TestOrientedTurnsWithoutCopying(t *testing.T) {
 		t.Error("orientation 1 must change nothing")
 	}
 }
+
+// TestCopyScreenKeepsTheDestinationName: a destination too long for the heading
+// is cut from the left, so the folder's own name stays; and a copy that ends
+// having written no bytes shows no rate.
+func TestCopyScreenKeepsTheDestinationName(t *testing.T) {
+	target := "/Volumes/Archive/clients/2024/a/very/long/path/that/will/not/fit/Photos-super"
+	m := newCopyScreen(&engine.CopyRun{Target: target, Files: 2, Bytes: 200}, NewStopper())
+	m.width = 61
+	m.Update(doneMsg(flatten.Result{Outcomes: []flatten.Outcome{flatten.Cloned, flatten.Cloned}, Cloned: 2, ClonedBytes: 200}))
+	v := ansi.Strip(m.View())
+	head := strings.SplitN(v, "\n", 2)[0]
+	if ansi.StringWidth(head) > 60 || !strings.HasSuffix(head, "/fit/Photos-super") || !strings.Contains(head, "…") {
+		t.Errorf("heading %q", head)
+	}
+	if strings.Contains(v, "MB/s") {
+		t.Errorf("a copy that wrote no bytes showed a rate:\n%s", v)
+	}
+}
