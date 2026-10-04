@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/charmbracelet/x/term v0.2.1
 	golang.org/x/image v0.46.0
+	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 )
 
